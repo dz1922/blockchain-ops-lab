@@ -29,7 +29,7 @@ Write like course material:
 npm ci && npx playwright install chromium   # once
 npm run check              # syntax check
 ./build.sh                 # src/* → dist/index.html
-LANGX=en node test/play.js # plays every lab end to end in headless Chromium (LANGX=zh for Chinese)
+LANGX=en node test/play.js # plays every lab end to end in headless Chromium (LANGX=zh for Chinese, ONLY=solana for one network)
 node test/shots.js         # desktop + mobile screenshots to /tmp/vsim-*.png
 ```
 
@@ -52,6 +52,7 @@ node test/shots.js         # desktop + mobile screenshots to /tmp/vsim-*.png
 | Field | Purpose |
 |---|---|
 | `id`, `name`, `color` | Identity, used on cards and in the UI. |
+| `desc` | `S.LL(zh, en)`: one line under the module heading on the landing page. |
 | `logo` | The network's mark as an SVG string with a square viewBox, or `id => svg` when it needs a unique gradient id. Shown on module headers, lab cards, the top bar and the mechanism panel. |
 | `init(w, cfg)` | Builds `w.chain` (protocol state) and `w.nodes`. Create hosts with `S.makeHost`, files with `S.fsWrite`, and fill `services`. |
 | `tick(w, dt)` | Advances the mechanism: replay, voting, balance burn, uptime accrual, log lines (`S.log`). Can emit `S.lesson(w, key, title, html)`. |
@@ -83,7 +84,7 @@ node test/shots.js         # desktop + mobile screenshots to /tmp/vsim-*.png
 
 ## Adding a network
 
-Write `src/NN-net-<chain>.js`. Source material:
+Write `src/NN-net-<chain>.js`, its labs in `src/NN-scenarios-<chain>.js`, and its test cases in `test/labs/<chain>.js`; nothing else needs to change. Every lab must be played by at least one test case. Source material:
 
 - The client's own documentation gives paths, systemd units, users and identity files.
 - Production alert rules give the alert names and thresholds.

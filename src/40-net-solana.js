@@ -266,6 +266,7 @@
 
   S.registerNetwork({
     id: 'solana', name: 'Solana', color: '#b6f23a', logo: LOGO,
+    desc: S.LL('Agave 验证者：slot 与 epoch、投票交易与手续费、delinquent 的判定、identity 与备用机。', 'Agave validators: slots and epochs, vote transactions and their fees, delinquency, identities and standby machines.'),
     init(w, cfg) {
       const identity = '7nYTxq2Lw5RkV8dB3cM9pHf4Js6Ue1Zg2aNXyQrK5tPv', vote = 'Gv4kQpS2mT8xWc6RbN3hJd9Fy7Ze5Ua1LrK2nHsXqPtM', fund = 'FuNd8m3XtTq6vLZkqk3vW8a2QVeG5r7cUTh2JbVyN1Ks', unstaked = 'Un5tkd9Yc2pQ4vTLm8rJx1DsoW7nHqA3eBfK6gZRyM2p';
       w.chain = { identity, vote, fund, slot0: 312906864, lastVote: 312906863, bal: { [identity]: cfg.balance ?? 9.4, [fund]: 412.5 }, mainnetBal: {}, burnPerDay: cfg.burnPerDay ?? 2.1, credits: 16 * 0.985 * (312906864 % EPOCH), airdrops: 0, keyfiles: {} };

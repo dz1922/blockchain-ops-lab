@@ -28,10 +28,6 @@
         ['Alerts and paging', 'Alert rules use production names and thresholds. A critical alert that is not acknowledged within 10 minutes pages the on-call phone.'],
         ['A review', 'Each lab ends with a score, the protocol mechanics you ran into, and the real incident it is based on.']],
     },
-    moduleDesc: {
-      avalanche: { zh: 'Primary Network 验证者：avalanchego 的进程与配置、数据库版本、网络升级、P-Chain 在线率与奖励门槛。', en: 'Primary Network validators: the avalanchego process and its config, database versions, network upgrades, P-Chain uptime and the reward threshold.' },
-      solana: { zh: 'Agave 验证者：slot 与 epoch、投票交易与手续费、delinquent 的判定、identity 与备用机。', en: 'Agave validators: slots and epochs, vote transactions and their fees, delinquency, identities and standby machines.' },
-    },
     labWord: { zh: '练习', en: 'Lab' },
     difficulty: { zh: '难度', en: 'Difficulty' },
     minutes: { zh: '约 {n} 分钟', en: 'about {n} min' },
@@ -142,7 +138,7 @@
     $('modules').innerHTML = nets.map(n => {
       const labs = S.scenarios.filter(s => s.network === n.id);
       const mod = labs[0] ? tr(labs[0].module) : n.name;
-      return `<section class="module"><div class="module-h">${logo(n, 28)}<h2>${mod}</h2></div><p class="desc">${tr(T.moduleDesc[n.id] || '')}</p>
+      return `<section class="module"><div class="module-h">${logo(n, 28)}<h2>${mod}</h2></div><p class="desc">${tr(n.desc || '')}</p>
         <div class="cards">${labs.map(s => {
           const d = done[s.id];
           return `<button class="card" data-s="${s.id}" style="border-top:3px solid ${n.color}">
@@ -154,7 +150,7 @@
         }).join('')}</div></section>`;
     }).join('');
     $('modules').querySelectorAll('.card').forEach(c => c.addEventListener('click', () => { location.hash = 's=' + c.dataset.s; }));
-    $('planned').innerHTML = `<h2>${t('plannedTitle')}</h2><div class="plan">${PLANNED.map(p => `<span class="net-chip soon">${logo(p, 16)}${p.name} · ${t('planned')}</span>`).join('')}</div>`;
+    $('planned').innerHTML = `<h2>${t('plannedTitle')}</h2><div class="plan">${PLANNED.filter(p => !nets.some(n => n.name === p.name)).map(p => `<span class="net-chip soon">${logo(p, 16)}${p.name} · ${t('planned')}</span>`).join('')}</div>`;
     $('framework').innerHTML = `<h2>${t('fwTitle')}</h2><p style="color:var(--ink-2);max-width:72ch">${t('fw')}</p>`;
     $('foot').textContent = t('foot');
   }

@@ -139,6 +139,107 @@
   });
 
   S.registerScenario({
+    id: 'avax-disk', network: 'avalanche', module: AVX, lab: 'A4', difficulty: 2, minutes: 12,
+    title: LL('根盘写满', 'The root disk is full'),
+    tagline: LL('一次没做容量检查的恢复演练写满了 avax-01 的根盘，节点自己停了。', 'A restore drill filled avax-01\'s root disk without a space check, and the node shut itself down.'),
+    learn: [
+      LL('avalanchego 在磁盘将满时如何保护自己', 'How avalanchego protects itself when the disk is nearly full'),
+      LL('找出占用空间的东西，只清理可以安全删除的部分', 'Finding what uses the space and removing only what is safe to remove'),
+      LL('不停机在线扩容 EBS 根卷：modify-volume、growpart、resize2fs', 'Growing an EBS root volume online: modify-volume, growpart, resize2fs'),
+    ],
+    brief: LL(
+      `<p>现在是 07:40 UTC。avax-01 停止验证已经半个多小时，<code>DiskSpaceCritical</code>、<code>NodeDown</code> 和 <code>AvalancheNodeUnhealthy</code> 都在响。</p><p>昨晚一位同事在 avax-01 上做恢复演练：把 S3 上的链数据种子包拷到本机，用来测一次重建要多久。拷之前没有检查可用空间。这批节点的根盘本来就用了约 85%，每天还增长约 2.6 GB。</p><p>请让 avax-01 恢复验证，并给根盘留出足够余量，让 <code>DiskSpaceLow</code> 也恢复。</p>`,
+      `<p>It is 07:40 UTC. avax-01 stopped validating more than half an hour ago, and <code>DiskSpaceCritical</code>, <code>NodeDown</code> and <code>AvalancheNodeUnhealthy</code> are firing.</p><p>Last night a colleague ran a restore drill on avax-01: copy the chain-data seed archive from S3 to the node and time a rebuild. Nobody checked the free space first. The root disks in this fleet were already about 85% full and grow by about 2.6 GB a day.</p><p>Bring avax-01 back, and leave its root disk with enough headroom that <code>DiskSpaceLow</code> clears as well.</p>`),
+    startAt: '2026-10-15T07:40:00Z', alertAge: 1800,
+    config: { activation: null, nodes: [Object.assign({}, FLEET[0], { bin: '1.15.0', db: '1.15.0', disk: { size: 1664, base: 14, dbGB: 1408, journalGB: 6.2 }, files: [{ path: '/home/ubuntu/seed/mainnet-latest.tar.zst', c: '(zstd compressed data, incomplete)', owner: 'root', fill: true, leaveGB: 0.2 }], since: -2280, stoppedAt: -2280, restarts: 452 })] },
+    setup(w) {
+      S.fsWrite(w.nodes['avax-01'], '/root/.bash_history', 'cd /home/ubuntu\nmkdir -p seed\naws s3 ls s3://example-chaindata/avalanche/ --region us-east-1\naws s3 cp s3://example-chaindata/avalanche/mainnet-latest.tar.zst /home/ubuntu/seed/ --region us-east-1\n', { mode: '600' });
+    },
+    objectives: [
+      { text: LL('avax-01 的 avalanchego 在运行，/ext/health 报告 healthy', 'avalanchego runs on avax-01 and /ext/health reports healthy'), check: w => A().healthy(w, w.nodes['avax-01']) },
+      { text: LL('根文件系统可用空间超过 15%（DiskSpaceLow 和 DiskSpaceCritical 都已恢复）', 'More than 15% of the root filesystem is free (DiskSpaceLow and DiskSpaceCritical have both cleared)'), check: w => A().availPct(w.nodes['avax-01']) >= 15 },
+    ],
+    forbidden: [
+      { flag: 'db_files', text: LL('删除链数据库目录里的文件', 'Deleting files inside the chain database directory') },
+      ...avxForbidden.filter(f => f.flag !== 'rollback'),
+    ],
+    hints: [
+      LL('<code>ssm avax-01</code>、<code>sudo -i</code>、<code>df -h /</code>，再看 <code>journalctl -u avalanchego -n 20 --no-pager</code> 里的 FATAL。', '<code>ssm avax-01</code>, <code>sudo -i</code>, <code>df -h /</code>, then look for FATAL in <code>journalctl -u avalanchego -n 20 --no-pager</code>.'),
+      LL('找出空间去了哪里：<code>du -h --max-depth=1 /home/ubuntu</code>、<code>du -sh /home/ubuntu/.avalanchego/db /var/log/journal</code>。同事做过什么，可以看 <code>cat /root/.bash_history</code>。', 'Find where the space went: <code>du -h --max-depth=1 /home/ubuntu</code>, <code>du -sh /home/ubuntu/.avalanchego/db /var/log/journal</code>. To see what the colleague ran: <code>cat /root/.bash_history</code>.'),
+      LL('可以安全删除的是没拷完的种子包 <code>/home/ubuntu/seed/mainnet-latest.tar.zst</code> 和归档日志（<code>journalctl --vacuum-size=500M</code>）。数据库目录 <code>/home/ubuntu/.avalanchego/db</code> 里的任何文件都不能删。腾出空间后，systemd 的下一次自动重启就会恢复节点。', 'Safe to remove: the half-copied seed archive <code>/home/ubuntu/seed/mainnet-latest.tar.zst</code> and the archived journals (<code>journalctl --vacuum-size=500M</code>). Nothing under <code>/home/ubuntu/.avalanchego/db</code> may be deleted. Once there is space, the next automatic restart brings the node back.'),
+      LL('只清理还不够让 DiskSpaceLow 恢复，需要在线扩容。回到工作电脑：<code>aws ec2 describe-volumes --region us-east-1 --filters Name=attachment.instance-id,Values=i-0a1f3c5e7b9d24681 --output table</code>，再 <code>aws ec2 modify-volume --region us-east-1 --volume-id &lt;卷 ID&gt; --size 2000</code>。', 'Cleaning up alone does not clear DiskSpaceLow; grow the volume online. From the workstation: <code>aws ec2 describe-volumes --region us-east-1 --filters Name=attachment.instance-id,Values=i-0a1f3c5e7b9d24681 --output table</code>, then <code>aws ec2 modify-volume --region us-east-1 --volume-id &lt;volume-id&gt; --size 2000</code>.'),
+      LL('约一分钟后卷进入 optimizing 状态，<code>lsblk</code> 能看到新容量。然后在节点上以 root 执行 <code>growpart /dev/nvme0n1 1</code> 和 <code>resize2fs /dev/nvme0n1p1</code>，用 <code>df -h /</code> 确认。', 'After about a minute the volume enters the optimizing state and <code>lsblk</code> shows the new size. Then, as root on the node, run <code>growpart /dev/nvme0n1 1</code> and <code>resize2fs /dev/nvme0n1p1</code>, and confirm with <code>df -h /</code>.'),
+    ],
+    limit: 4 * 3600, holdFor: 60,
+    score: w => {
+      const n = w.nodes['avax-01'], off = n.av.offline, use = 100 - A().availPct(n);
+      return [
+        [LL('本次离线时间（练习开始后）', 'Downtime during the lab'), S.fmtDur(off), off < 900 ? 'good' : off < 3600 ? 'mid' : 'bad'],
+        [LL('结束时根盘使用率', 'Root disk use at the end'), use.toFixed(1) + '%', use < 75 ? 'good' : use < 85 ? 'mid' : 'bad'],
+        [LL('根卷大小', 'Root volume size'), `${n.vol.size} GiB`, n.vol.size > 1664 ? 'good' : 'mid'],
+      ];
+    },
+    debrief: LL(
+      '两条真实记录促成了这个练习。2026 年 9 月对生产节点做容量检查时，所有 Avalanche 节点的根盘都已用了 78–80%，每天增长约 2.6 GB，大约一个月后就会触发 DiskSpaceLow。同一批机器中另一条链的节点，曾经写到 99% 才有告警响起，因为它们唯一的磁盘规则是一条很晚才触发的 critical。恢复手册写明了前提：磁盘要同时放得下压缩包和解压后的数据。这里的演练跳过了这一步。可用空间低于 512 MiB 时，avalanchego 会自行退出来保护数据库，systemd 随后不断重启它。正确的顺序是：先删除不属于链数据的东西，让 systemd 把节点拉起来，再在线扩容根卷（modify-volume、growpart、resize2fs），整个过程不需要停机。删除数据库文件会把一小时的故障变成一次约 22 小时的重新同步。扩容之后，部署工具里的最小根卷大小也要一起调高，否则下次新建的节点还会是旧的容量。',
+      'Two real findings shaped this lab. A capacity check of the production fleet in September 2026 found every Avalanche root disk 78–80% full and growing by about 2.6 GB a day, roughly a month away from DiskSpaceLow. Separately, nodes of another chain in the same fleet reached 99% full before any alert fired, because their only disk rule was a late critical threshold. The restore runbook states its own prerequisite: the disk must hold both the archive and the extracted data. The drill here skipped that check. Below 512 MiB free, avalanchego shuts itself down to protect its database, and systemd keeps restarting it. The safe order is to remove what is not chain data, let systemd bring the node back, and then grow the root volume online with modify-volume, growpart and resize2fs, with no downtime. Deleting database files turns a one-hour outage into a resync of about 22 hours. After growing a volume, also raise the minimum root volume size in the deployment tooling, or the next node built will have the old size again.'),
+  });
+
+  S.registerScenario({
+    id: 'avax-period', network: 'avalanche', module: AVX, lab: 'A5', difficulty: 2, minutes: 12,
+    title: LL('质押期结束前的变更', 'A change before the period ends'),
+    tagline: LL('avax-02 的在线率低于 90%，质押期还剩四天。今天的变更窗口里有两台机器要换机型。', 'avax-02 is below 90% with four days left in its staking period, and today\'s change window holds two instance changes.'),
+    learn: [
+      LL('从独立视角读取在线率和质押期结束时间', 'Reading uptime and the period end time from the independent view'),
+      LL('计算期末在线率，以及还能承受多少离线时间', 'Working out end-of-period uptime and how much downtime is still affordable'),
+      LL('按余量安排计划内的停机', 'Scheduling planned downtime by the margin each node has'),
+    ],
+    brief: LL(
+      `<p>10 月 16 日（周五）09:00 UTC。今天的变更窗口里有两个已经批准的 PR：<b>#521</b> 给 avax-01 换机型，<b>#522</b> 给 avax-02 换机型。两者都要停止实例，验证者会离线约 25 分钟。</p><p>从昨天起，avax-02 的 <code>AvalancheRewardingStakeCritical</code> 和 <code>AvalancheRewardAtRiskAtPeriodEnd</code> 一直在响。它的质押期四天后结束。奖励是全有或全无：期末在线率低于 90%，整期的奖励（约 7,649 AVAX）全部作废。</p><p>请判断今天哪个变更可以执行，执行它，并确保另一个不会被执行。</p>`,
+      `<p>Friday 16 October, 09:00 UTC. Today's change window holds two approved pull requests: <b>#521</b> changes the instance type of avax-01 and <b>#522</b> that of avax-02. Both stop the instance, so each validator is offline for about 25 minutes.</p><p>Since yesterday, <code>AvalancheRewardingStakeCritical</code> and <code>AvalancheRewardAtRiskAtPeriodEnd</code> have been firing for avax-02. Its staking period ends in four days. The reward is all or nothing: if the period ends below 90% uptime, the whole period's reward, about 7,649 AVAX, is lost.</p><p>Decide which change can run today, run it, and make sure the other one does not.</p>`),
+    startAt: '2026-10-16T09:00:00Z', alertAge: 64800,
+    config: {
+      activation: null,
+      nodes: fleet(f => Object.assign({ bin: '1.15.0', db: '1.15.0' }, f.moniker === 'avax-02' ? { elapsedDays: 52, periodDays: 56, downHours: 134.15 } : {})),
+      prs: [
+        { n: 521, kind: 'resize', moniker: 'avax-01', to: 'c6in.4xlarge', memGB: 32, downMin: 25, author: 'ops-capacity', branch: 'resize/avax-01', title: 'infra(avalanche): avax-01 c6in.2xlarge -> c6in.4xlarge (16 GB -> 32 GB)',
+          body: '  avax-01 (NodeID-7Xhw2mDxuDS44j42TCB6U5579esbSt3Lg), us-east-1\n  Reason: two OOM kills in the last month. 16 GB is not enough while the node replays.\n\n  On merge, instance-resize.yml will:\n    1. systemctl stop avalanchego\n    2. stop the instance, set --instance-type c6in.4xlarge, start it\n    3. avalanchego starts on boot and replays\n  Expected validator downtime: about 25 minutes.\n  The Elastic IP stays attached, so public-ip does not change.\n  Window: Friday 16 October, 09:00-12:00 UTC.' },
+        { n: 522, kind: 'resize', moniker: 'avax-02', to: 'm6a.2xlarge', memGB: 32, downMin: 25, author: 'ops-capacity', branch: 'resize/avax-02', title: 'infra(avalanche): avax-02 t3.2xlarge -> m6a.2xlarge',
+          body: '  avax-02 (NodeID-MFrZFVCXPv5iCn6M9K6XduxGTYp891xXZ), us-west-2\n  Reason: the t3 runs out of CPU credits while replaying; consensus falls behind.\n\n  On merge, instance-resize.yml will:\n    1. systemctl stop avalanchego\n    2. stop the instance, set --instance-type m6a.2xlarge, start it\n    3. avalanchego starts on boot and replays\n  Expected validator downtime: about 25 minutes.\n  The Elastic IP stays attached, so public-ip does not change.\n  Window: Friday 16 October, 09:00-12:00 UTC.' },
+      ],
+    },
+    setup(w) { w.chain.prs = w.scn.config.prs.map(p => Object.assign({ labels: [], comments: [] }, p)); },
+    tick(w) { if (A().projected(w.nodes['avax-02']) < 90) S.flag(w, 'forfeit'); },
+    objectives: [
+      { text: LL('从独立视角（api.avax.network）读取 avax-02 的在线率和结束时间', 'Read avax-02\'s uptime and end time from the independent view (api.avax.network)'), check: w => !!(w.chain.seen && w.chain.seen['avax-02']) },
+      { text: LL('#521 已合并，avax-01 在新机型上恢复健康', '#521 is merged and avax-01 is healthy on its new instance type'), check: w => w.nodes['avax-01'].instanceType === 'c6in.4xlarge' && A().healthy(w, w.nodes['avax-01']) },
+      { text: LL('#522 被挡到 avax-02 的质押期结束之后（关闭 PR，或加上 do-not-merge 标签）', '#522 is held until avax-02\'s period has ended (closed, or labelled do-not-merge)'), check: w => { const p = w.chain.prs.find(x => x.n === 522); return !p.merged && (p.closed || p.labels.some(l => /do-not-merge|hold/i.test(l))); } },
+      { text: LL('avax-02 保持在线（connected）', 'avax-02 stays connected'), check: w => A().connected(w, w.nodes['avax-02']) },
+    ],
+    forbidden: [
+      { flag: 'forfeit', text: LL('让 avax-02 的期末在线率跌破 90%（计划内停机用掉了全部余量）', 'Pushing avax-02\'s end-of-period uptime below 90% (planned downtime used up the whole margin)') },
+      ...avxForbidden,
+    ],
+    hints: [
+      LL('先看奖励实际依据的记录：<code>curl -s -X POST --data \'{"jsonrpc":"2.0","id":1,"method":"platform.getCurrentValidators","params":{}}\' https://api.avax.network/ext/bc/P | jq \'.result.validators[] | {nodeID, uptime, endTime}\'</code>。每个 PR 里写了对应节点的 NodeID（<code>gh pr view 522</code>）。', 'Start with the record the reward is paid on: <code>curl -s -X POST --data \'{"jsonrpc":"2.0","id":1,"method":"platform.getCurrentValidators","params":{}}\' https://api.avax.network/ext/bc/P | jq \'.result.validators[] | {nodeID, uptime, endTime}\'</code>. Each PR names its node\'s NodeID (<code>gh pr view 522</code>).'),
+      LL('<code>date -u -d @&lt;endTime&gt;</code> 换算结束时间。期末在线率 = (当前在线率 × 已过天数 + 100 × 剩余天数) ÷ 整期天数，例如 <code>echo "scale=4; (89.2508*52 + 100*4)/56" | bc</code>。avax-02 的整期是 56 天，每离线一小时约损失 0.074 个百分点。', 'Convert the end time with <code>date -u -d @&lt;endTime&gt;</code>. End-of-period uptime = (current uptime × days elapsed + 100 × days left) ÷ period length, for example <code>echo "scale=4; (89.2508*52 + 100*4)/56" | bc</code>. avax-02\'s period is 56 days, so each hour offline costs about 0.074 percentage points.'),
+      LL('avax-02 如果一直在线，期末约 90.02%，余量只有约 15 分钟。25 分钟的变更会让整期奖励作废，所以 #522 要等期末之后再做：<code>gh pr edit 522 --add-label do-not-merge</code>，或者 <code>gh pr close 522 --comment "等 avax-02 质押期结束后再做"</code>。', 'If avax-02 stays online it ends the period at about 90.02%, a margin of about 15 minutes. A 25-minute change would forfeit the whole reward, so #522 waits until after the period ends: <code>gh pr edit 522 --add-label do-not-merge</code>, or <code>gh pr close 522 --comment "after avax-02\'s period ends"</code>.'),
+      LL('avax-01 在线率约 99.3%，质押期还有几个月，25 分钟的停机影响很小：<code>gh pr merge 521</code>，然后在事件记录里等它恢复健康。', 'avax-01 is at about 99.3% with months left in its period, so 25 minutes offline barely moves it: <code>gh pr merge 521</code>, then watch the event log until it is healthy.'),
+    ],
+    limit: 4 * 3600, holdFor: 60,
+    score: w => {
+      const p2 = A().projected(w.nodes['avax-02']), done = w.nodes['avax-01'].instanceType === 'c6in.4xlarge';
+      return [
+        [LL('avax-02 期末在线率（之后不再离线）', 'avax-02 end-of-period uptime (if no further downtime)'), p2.toFixed(3) + '%', p2 >= 90 ? 'good' : 'bad'],
+        [LL('avax-01 换机型', 'avax-01 instance change'), done ? LL('已完成', 'done') : LL('未完成', 'not done'), done ? 'good' : 'mid'],
+        [LL('avax-01 期末在线率（之后不再离线）', 'avax-01 end-of-period uptime (if no further downtime)'), A().projected(w.nodes['avax-01']).toFixed(3) + '%', A().projected(w.nodes['avax-01']) >= 95 ? 'good' : 'mid'],
+      ];
+    },
+    debrief: LL(
+      '本练习来自网络升级事故之后对奖励告警的一次复盘。旧的告警读的是 info.uptime 的 rewardingStakePercentage，它描述的是网络，而不是节点：同一时刻，真实在线率为 93.54% 和 99.81% 的两台节点，读数分别是 94.5732 和 94.5722。这个数字跌破 95 时，七台验证者一起告警，真正接近门槛的那一台反而分辨不出来。修复之后，告警改为从 api.avax.network 读取每台验证者自己的记录，并新增了 RewardAtRiskAtPeriodEnd：在线率低于 92% 且剩余不到一周。告警文字说奖励即将作废，但结论要靠计算。在线率是累计值，剩下的每一天在线都会把它往上拉。在线率 89.25%、还剩四天的节点，只要不再出问题，期末仍有 90.02%，余量约 15 分钟，任何计划内的停机都会用掉它。需要停实例的变更，应该安排在余量充足的时候。另外，质押期结束时没有任何告警：validator_active 变为 0，所有在线率告警随之静默。用同一个 NodeID 重新注册（绝不重新生成 signer.key）需要提前排进计划。',
+      'This lab comes from a review of the reward alerts after the network upgrade incident. The old alert read info.uptime\'s rewardingStakePercentage, which describes the network, not the node: at the same moment, two nodes with real uptimes of 93.54% and 99.81% read 94.5732 and 94.5722. When the number drifted under 95 it paged all seven validators, and the one node genuinely near the floor could not be told apart. After the fix the alerts read each validator\'s own record from api.avax.network, and RewardAtRiskAtPeriodEnd was added: under 92% with less than a week left. The alert text says the reward is about to be lost; the arithmetic decides. Uptime is cumulative, so every remaining day online pulls it up. A node at 89.25% with four days left still ends the period at 90.02% if nothing else goes wrong. That is a margin of about 15 minutes, and any planned downtime uses it up. Changes that stop an instance belong in periods with ample margin. Also note that the end of a period raises no alert at all: validator_active drops to 0 and every uptime alert goes quiet. Re-registering with the same NodeID, never with a new signer.key, has to be planned ahead.'),
+  });
+
+  S.registerScenario({
     id: 'sol-balance', network: 'solana', module: SOL, lab: 'S1', difficulty: 1, minutes: 8,
     title: LL('identity 余额告警', 'Identity balance alert'),
     tagline: LL('testnet 验证者的 identity 余额在持续下降。', 'The identity balance of a testnet validator keeps falling.'),
@@ -175,5 +276,94 @@
     debrief: LL(
       '本练习参考了一次真实的 testnet 事故：identity 余额在晚上 19:00 只剩 0.0008 SOL，14 分钟后验证者变为 delinquent。当时的告警阈值是 0.1 SOL，只提前了 70 分钟，而且是在半夜。事后阈值改为按剩余天数设置（低于 8 SOL 预警，低于 5 SOL 严重），告警标题中也写明了网络和 identity。',
       'This lab is based on a real testnet incident. The identity balance was down to 0.0008 SOL at 19:00 and the validator became delinquent 14 minutes later. The alert threshold at the time was 0.1 SOL, which gave 70 minutes of warning, at night. Afterwards the thresholds were set by days of runway (warning below 8 SOL, critical below 5 SOL), and the alert title was changed to name the network and the identity.'),
+  });
+  const SH = () => S.networks.solana.helpers;
+  const STAKED = '7nYTxq2Lw5RkV8dB3cM9pHf4Js6Ue1Zg2aNXyQrK5tPv';
+  S.registerScenario({
+    id: 'sol-failover', network: 'solana', module: SOL, lab: 'S2', difficulty: 3, minutes: 15,
+    title: LL('计划内的主备切换', 'A planned switch to the standby'),
+    tagline: LL('sol-1 所在的机柜 15:00 断电维护。把投票交给热备机，而且不能双签。', 'The rack holding sol-1 loses power at 15:00 for maintenance. Hand voting to the hot standby without ever double signing.'),
+    learn: [
+      LL('身份切换的顺序：主节点先放手，备用机再接手', 'The order of an identity switch: the primary lets go before the standby takes over'),
+      LL('tower 文件的作用，以及 set-identity --require-tower', 'What the tower file is for, and set-identity --require-tower'),
+      LL('防止旧主节点重新上线时带着质押 identity 启动', 'Keeping the old primary from coming back with the staked identity'),
+    ],
+    brief: LL(
+      `<p>现在是 14:20 UTC。机房通知：sol-1 所在的机柜将在 <b>15:00</b> 断电维护，大约 45 分钟。</p><p>sol-backup 是热备机：它已经追上链头，用自己的非质押 identity 运行，机器上也存有一份质押 keypair。请在 15:00 之前把投票交给 sol-backup。</p><p>要求：任何时刻都不能有两台机器同时使用质押 identity；备用机要带着主节点的 tower 接手；sol-1 维护结束重新通电后，不能变成第二个用质押 identity 运行的验证者。</p>`,
+      `<p>It is 14:20 UTC. The data centre has announced that the rack holding sol-1 will be powered off at <b>15:00</b> for about 45 minutes of maintenance.</p><p>sol-backup is a hot standby: it is caught up, runs its own unstaked identity, and holds a copy of the staked keypair. Move voting to sol-backup before 15:00.</p><p>The rules: at no moment may two machines run the staked identity; the standby must take over with the primary's tower; and when sol-1 powers back on after maintenance, it must not become a second validator running the staked identity.</p>`),
+    startAt: '2026-10-07T14:20:00Z',
+    config: { balance: 14, burnPerDay: 2.1, standby: 'unstaked', setIdentity: true, maintenance: { host: 'sol-1', off: 2400, on: 5100 } },
+    setup(w) {
+      S.fsWrite(w.laptop, '/home/ops/NOTES.md', S.L(
+        `# testnet 验证者\n- 质押 identity: ${STAKED}\n- vote account: ${w.chain.vote}\n- sol-1（主，198.51.100.21）：非质押 keypair 在 /home/sol/unstaked-identity.json\n- sol-backup（热备，198.51.100.22）：平时用自己的非质押 identity 运行；质押 keypair 在 /home/sol/validator-keypair.json\n- 两台的 ledger 和 tower 文件都在 /mnt/ledger；sol 和 root 用户可以互相 scp\n- 2026-10-07 15:00–15:45 UTC：机柜维护，sol-1 断电\n`,
+        `# testnet validator\n- staked identity: ${STAKED}\n- vote account: ${w.chain.vote}\n- sol-1 (primary, 198.51.100.21): unstaked keypair at /home/sol/unstaked-identity.json\n- sol-backup (hot standby, 198.51.100.22): runs its own unstaked identity; staked keypair at /home/sol/validator-keypair.json\n- ledger and tower files are in /mnt/ledger on both; the sol and root users can scp between them\n- 2026-10-07 15:00-15:45 UTC: rack maintenance, sol-1 powered off\n`));
+    },
+    objectives: [
+      { text: LL('sol-backup 用质押 identity 投票，验证者没有 delinquent', 'sol-backup votes with the staked identity and the validator is not delinquent'), check: w => SH().isVoting(w, w.nodes['sol-backup']) && !SH().delinquent(w) },
+      { text: LL('sol-1 不再使用质押 identity（已停止、已断电，或已切到非质押 identity）', 'sol-1 no longer runs the staked identity (stopped, powered off, or switched to an unstaked identity)'), check: w => SH().runningIdentity(w, w.nodes['sol-1']) !== w.chain.identity },
+      { text: LL('sol-1 重新通电后不会用质押 identity 启动（服务已 disable，或 unit 指向非质押 keypair）', 'sol-1 cannot start with the staked identity when it powers back on (service disabled, or its unit points at the unstaked keypair)'), check: w => { const n = w.nodes['sol-1']; return n.services['agave-validator'].enabled === false || SH().unitIdentity(w, n) !== w.chain.identity; } },
+    ],
+    forbidden: [
+      { flag: 'double_sign', text: LL('让两台机器同时使用质押 identity', 'Running the staked identity on two machines at once') },
+      { flag: 'no_tower', text: LL('备用机在没有主节点 tower 文件的情况下接管质押 identity', 'Taking over the staked identity on the standby without the primary\'s tower file') },
+    ],
+    hints: [
+      LL('先确认备用机已经追上：<code>ssm sol-backup</code>、<code>solana catchup --our-localhost</code>、<code>agave-validator -l /mnt/ledger monitor</code>（Ctrl+C 退出），然后 <code>exit</code>。笔记在工作电脑的 <code>~/NOTES.md</code>。', 'First confirm the standby is caught up: <code>ssm sol-backup</code>, <code>solana catchup --our-localhost</code>, <code>agave-validator -l /mnt/ledger monitor</code> (Ctrl+C to stop), then <code>exit</code>. Notes are in <code>~/NOTES.md</code> on the workstation.'),
+      LL('在 sol-1 上以 root：<code>agave-validator -l /mnt/ledger wait-for-restart-window --min-idle-time 2 --skip-new-snapshot-check</code>，然后 <code>agave-validator -l /mnt/ledger set-identity /home/sol/unstaked-identity.json</code>。从这一刻起 sol-1 不再用质押 identity 签名。', 'On sol-1 as root: <code>agave-validator -l /mnt/ledger wait-for-restart-window --min-idle-time 2 --skip-new-snapshot-check</code>, then <code>agave-validator -l /mnt/ledger set-identity /home/sol/unstaked-identity.json</code>. From then on sol-1 no longer signs with the staked identity.'),
+      LL(`把 tower 拷到备用机：<code>scp /mnt/ledger/tower-1_9-${STAKED}.bin sol-backup:/mnt/ledger/</code>`, `Copy the tower to the standby: <code>scp /mnt/ledger/tower-1_9-${STAKED}.bin sol-backup:/mnt/ledger/</code>`),
+      LL(`在 sol-backup 上以 root：<code>agave-validator -l /mnt/ledger set-identity --require-tower /home/sol/validator-keypair.json</code>。确认：<code>solana gossip | grep ${STAKED}</code> 显示 198.51.100.22。`, `On sol-backup as root: <code>agave-validator -l /mnt/ledger set-identity --require-tower /home/sol/validator-keypair.json</code>. Confirm with <code>solana gossip | grep ${STAKED}</code>, which should show 198.51.100.22.`),
+      LL('15:45 sol-1 会重新通电，systemd 按 unit 文件启动它。在 sol-1 上执行 <code>systemctl disable agave-validator</code>，或者 <code>sed -i \'s/validator-keypair.json/unstaked-identity.json/\' /etc/systemd/system/agave-validator.service</code>。', 'sol-1 powers back on at 15:45 and systemd starts it from its unit file. On sol-1, run <code>systemctl disable agave-validator</code>, or <code>sed -i \'s/validator-keypair.json/unstaked-identity.json/\' /etc/systemd/system/agave-validator.service</code>.'),
+    ],
+    limit: 3 * 3600, holdFor: 60,
+    score: w => {
+      const gap = w.chain.noVoteSec || 0;
+      return [
+        [LL('没有投票的时间（合计）', 'Time without voting (total)'), S.fmtDur(gap), gap < 60 ? 'good' : gap < 300 ? 'mid' : 'bad'],
+        [LL('delinquent 时长', 'Time delinquent'), S.fmtDur(w.chain.delinquentSec || 0), (w.chain.delinquentSec || 0) === 0 ? 'good' : 'mid'],
+      ];
+    },
+    debrief: LL(
+      '本练习按课程中的身份热切换步骤编写，背后是一条从真实迁移中得出的规则。2026 年 4 月，主网验证者从自建主机迁到托管服务商，同一个质押 identity 从此在服务商那边运行，而旧主机上仍留着一份密钥。事后写下的铁律是：质押 identity 至少存在于几处（托管主机、密钥库、可能还有退役的旧主机），任何时候都不能用它启动第二个验证者进程，旧主机即使重新上线也不行。切换的顺序就是保护：主节点先用 set-identity 放手，tower 跟着 identity 走，备用机再用 --require-tower 接手。只删除密钥文件不能阻止正在运行的进程继续用内存中的密钥签名。实际操作中这几步会写成脚本，投票空档只有几秒；手工操作时间更长，超过约 51 秒验证者就会被标记为 delinquent。',
+      'This lab follows the identity hot-swap procedure from the course, and a rule that came out of a real migration. In April 2026 the mainnet validator moved from a self-run host to a hosting provider. From then on the same staked identity ran at the provider, while the old host still held a copy of the key. The rule written down afterwards: the staked identity exists in several places (the hosting provider, a secrets store, possibly the retired host), and no second validator process may ever start with it, even if the old host comes back online. The switch order is the safeguard. The primary lets go with set-identity, the tower travels with the identity, and only then does the standby take over with --require-tower. Deleting a key file does not stop a running process from signing with the key it holds in memory. In practice these steps are scripted and the voting gap is a few seconds. Done by hand it takes longer, and a gap over about 51 seconds marks the validator delinquent.'),
+  });
+
+  S.registerScenario({
+    id: 'sol-stale-snapshot', network: 'solana', module: SOL, lab: 'S3', difficulty: 2, minutes: 12,
+    title: LL('重启之后仍然 delinquent', 'Still delinquent after a restart'),
+    tagline: LL('sol-1 停机两天后重新启动，服务显示 active，但它离链头越来越远。', 'sol-1 was restarted after two days offline. The service is active, but it keeps falling further behind.'),
+    learn: [
+      LL('用 solana catchup 判断节点在追赶还是在落后', 'Using solana catchup to tell catching up from falling behind'),
+      LL('长时间停机后为什么要用新快照启动', 'Why a node needs a fresh snapshot after a long outage'),
+      LL('哪些 ledger 文件可以动，哪些不能动', 'Which ledger files may be touched and which may not'),
+    ],
+    brief: LL(
+      `<p>sol-1 停机两天，机房更换了一根故障内存条。同事在 08:05 UTC 重新启动了 agave-validator，然后去开会了。</p><p>现在是 08:30，验证者仍然 delinquent：<code>SolanaValidatorDelinquent</code>、<code>SolanaVoteInactive</code> 和 <code>SolanaSlotsSeverelyBehind</code> 都在响，但 systemd 显示服务是 active。同事留言："它在追块，给它点时间。如果一会儿还是红的，就把 sol-backup 启动起来。"</p><p>请让 sol-1 恢复投票。</p>`,
+      `<p>sol-1 was offline for two days while the data centre replaced a faulty memory module. A colleague started agave-validator again at 08:05 UTC and went into a meeting.</p><p>It is now 08:30 and the validator is still delinquent: <code>SolanaValidatorDelinquent</code>, <code>SolanaVoteInactive</code> and <code>SolanaSlotsSeverelyBehind</code> are firing, while systemd reports the service as active. The colleague left a message: "It's catching up, give it time. If it's still red later, start sol-backup."</p><p>Get sol-1 voting again.</p>`),
+    startAt: '2026-11-03T08:30:00Z', alertAge: 1200,
+    config: { balance: 14, burnPerDay: 2.1, snapshots: true, credits: 0, staleRestart: { downFor: 2 * 86400 + 1800, restartedAgo: 1500 } },
+    objectives: [
+      { text: LL('sol-1 在投票，验证者没有 delinquent', 'sol-1 is voting and the validator is not delinquent'), check: w => SH().isVoting(w, w.nodes['sol-1']) && !SH().delinquent(w) },
+      { text: LL('恢复后用链上数据确认一次（solana catchup、validators 或 vote-account）', 'Once it recovers, confirm from on-chain data (solana catchup, validators or vote-account)'), check: w => w.flags.verified !== undefined },
+    ],
+    forbidden: [
+      { flag: 'double_sign', text: LL('让两台机器同时使用质押 identity（sol-backup 的 unit 配置的是同一个质押 identity）', 'Running the staked identity on two machines at once (sol-backup\'s unit is configured with the same staked identity)') },
+      { flag: 'wipe_ledger', text: LL('删除 ledger 中的 rocksdb、accounts 或 tower 文件', 'Deleting rocksdb, accounts or tower files from the ledger') },
+    ],
+    hints: [
+      LL('<code>ssm sol-1</code>、<code>sudo -i</code>、<code>solana catchup --our-localhost</code>。看清楚它是在追赶（gaining），还是在落后（falling behind）。', '<code>ssm sol-1</code>, <code>sudo -i</code>, <code>solana catchup --our-localhost</code>. Note whether it is gaining or falling behind.'),
+      LL('<code>journalctl -u agave-validator -n 30 --no-pager</code> 和 <code>systemctl cat agave-validator</code>。注意它加载的快照来自哪个 slot，以及是哪个参数让它没有去找更新的快照。', '<code>journalctl -u agave-validator -n 30 --no-pager</code> and <code>systemctl cat agave-validator</code>. Note the slot of the snapshot it loaded, and the flag that kept it from looking for a newer one.'),
+      LL('停机两天的节点，没法靠从其他节点修复（repair）缺失的 slot 追上来，需要一个新的快照。去掉 <code>--no-snapshot-fetch</code>：<code>sed -i \'s/ --no-snapshot-fetch//\' /etc/systemd/system/agave-validator.service</code>，<code>systemctl daemon-reload</code>，<code>systemctl restart agave-validator</code>。', 'A node that was down for two days cannot catch up by repairing the missing slots from peers. It needs a fresh snapshot. Remove <code>--no-snapshot-fetch</code>: <code>sed -i \'s/ --no-snapshot-fetch//\' /etc/systemd/system/agave-validator.service</code>, <code>systemctl daemon-reload</code>, <code>systemctl restart agave-validator</code>.'),
+      LL('节点会从 known validator 下载快照、加载，然后在几分钟内追上。用 <code>agave-validator -l /mnt/ledger monitor</code> 观察，最后用 <code>solana catchup --our-localhost</code> 确认。不要动 rocksdb、accounts 和 tower 文件，也不要启动 sol-backup。', 'The node downloads a snapshot from a known validator, loads it, and catches up within a few minutes. Watch with <code>agave-validator -l /mnt/ledger monitor</code>, then confirm with <code>solana catchup --our-localhost</code>. Leave rocksdb, accounts and the tower file alone, and do not start sol-backup.'),
+    ],
+    limit: 3 * 3600, holdFor: 60,
+    score: w => {
+      const d = w.chain.delinquentSec || 0;
+      return [
+        [LL('练习中 delinquent 的时长', 'Time delinquent during the lab'), S.fmtDur(d), d < 1200 ? 'good' : d < 3600 ? 'mid' : 'bad'],
+      ];
+    },
+    debrief: LL(
+      '长时间停机后，带着 <code>--no-snapshot-fetch</code> 重启的验证者，会加载自己最后一个本地快照。从那以后的每个 slot 都要重放，而 blockstore 里没有的 slot 只能从其他节点修复（repair）。修复的速度比集群出块慢，所以差距越拉越大，systemd 却一直显示 active。解决办法是从 known validator 下载一个新快照。<code>--no-snapshot-fetch</code> 适合短暂的重启；停机很久之后，它会把节点困在过去。按同事的建议启动备用机也解决不了问题：sol-1 一旦追上，两台机器就会用同一把密钥投票。这里的告警时间线与生产规则一致：停投约 51 秒后链上标记 delinquent，SolanaValidatorDelinquent 在 5 分钟后触发，落后超过 1,500 个 slot 后 SolanaSlotsSeverelyBehind 触发。停投而无人察觉的代价是真实的：在一次真实事故中，一个验证者连续两个 epoch（约 4.4 天）没有获得质押奖励，团队是从托管方的客服那里得知的，而不是从监控。之后才加上了奖励流告警：本 epoch credits 与集群中位数之比，以及上一个 epoch 的奖励是否到账。',
+      'A validator restarted after a long outage with <code>--no-snapshot-fetch</code> loads its last local snapshot. Every slot since then has to be replayed, and slots the blockstore never received must be repaired from peers. Repair is slower than the cluster produces slots, so the gap keeps growing while systemd shows the service as active. The fix is a fresh snapshot from a known validator. <code>--no-snapshot-fetch</code> suits short restarts; after a long outage it keeps the node stuck in the past. Starting the standby, as the colleague suggested, would not have helped: as soon as sol-1 caught up, two machines would vote with one key. The alert timeline here matches the production rules: the chain marks a validator delinquent about 51 seconds after it stops voting, SolanaValidatorDelinquent fires 5 minutes later, and SolanaSlotsSeverelyBehind fires once the gap passes 1,500 slots. A stall that nobody notices has a real cost. In a real incident, a validator earned no staking rewards for two consecutive epochs, about 4.4 days, and the team learned it from the hosting provider\'s support rather than from monitoring. The rewards-flow alerts were added afterwards: this epoch\'s credits against the cluster median, and whether the last epoch\'s rewards arrived.'),
   });
 })(SIM);

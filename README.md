@@ -15,7 +15,7 @@ The UI and all teaching text are bilingual (zh / en). Real tool output in the te
 | `S.tr(x)` | Resolves either kind. |
 
 - Interface strings live in `T` in `src/60-ui.js`.
-- The language comes from `?lang=en`, then the saved choice, then the browser language.
+- The language comes from `?lang=zh|en`, then the saved choice, then defaults to English.
 - Lab fields (`title`, `tagline`, `brief`, `learn`, `hints`, objective and forbidden `text`, `debrief`, score labels) must all be `S.LL(...)`.
 
 ## Writing style
@@ -52,6 +52,7 @@ node test/shots.js         # desktop + mobile screenshots to /tmp/vsim-*.png
 | Field | Purpose |
 |---|---|
 | `id`, `name`, `color` | Identity, used on cards and in the UI. |
+| `logo` | The network's mark as an SVG string with a square viewBox, or `id => svg` when it needs a unique gradient id. Shown on module headers, lab cards, the top bar and the mechanism panel. |
 | `init(w, cfg)` | Builds `w.chain` (protocol state) and `w.nodes`. Create hosts with `S.makeHost`, files with `S.fsWrite`, and fill `services`. |
 | `tick(w, dt)` | Advances the mechanism: replay, voting, balance burn, uptime accrual, log lines (`S.log`). Can emit `S.lesson(w, key, title, html)`. |
 | `serviceAction(w, host, svc, action)` | Gives meaning to `systemctl start\|stop\|restart`. |
@@ -103,6 +104,9 @@ One-time setup:
 | What | Where |
 |---|---|
 | `VERCEL_TOKEN` | Repository secret. Create the token at vercel.com/account/tokens. |
+| `SITE_PASSWORD` | Repository secret. The site password. The deploy job writes its SHA-256 into `middleware.js`; the password is never committed. |
 | `VERCEL_SCOPE` | Repository variable, optional. Set it only when deploying into a Vercel team; leave it unset for a personal account. |
 
-The first run creates the Vercel project `blockchain-ops-lab` if it does not exist. To serve the site publicly, turn off Deployment Protection for production in the Vercel project settings.
+The first run creates the Vercel project `blockchain-ops-lab` if it does not exist. Turn off Vercel's own Deployment Protection for production; access is controlled by the password gate instead.
+
+`site/middleware.js` is the password gate. It is Vercel Routing Middleware, which runs on every plan. Visitors without a valid cookie get a password page. A correct password sets an HttpOnly cookie for 30 days. `node test/gate.mjs` tests it.

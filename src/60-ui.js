@@ -90,7 +90,19 @@
     welcome: { zh: 'help 列出命令 · hint 提示 · objectives 目标 · ssm <节点名> 登录节点', en: 'help lists commands · hint for a hint · objectives for goals · ssm <node> to log in' },
   };
   const t = (k, vars) => { let s = tr(T[k]); if (vars && typeof s === 'string') Object.entries(vars).forEach(([a, b]) => { s = s.split(`{${a}}`).join(b); }); return s; };
-  const PLANNED = [['Ethereum', '#7cc4ff'], ['XDC', '#9fb38f'], ['Canton', '#9fb38f'], ['Audius', '#9fb38f']];
+  const mono = (txt, bg) => `<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="16" fill="${bg}"/><text x="16" y="20.5" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="${txt.length > 2 ? 10 : 13}" font-weight="700" fill="#fff">${txt}</text></svg>`;
+  const PLANNED = [
+    { name: 'Ethereum', logo: '<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="16" fill="#627EEA"/><g fill="#fff"><path fill-opacity=".6" d="M16.5 4v8.87l7.5 3.35z"/><path d="M16.5 4 9 16.22l7.5-3.35z"/><path fill-opacity=".6" d="M16.5 21.97V28l7.5-10.38z"/><path d="M16.5 28v-6.03L9 17.62z"/><path fill-opacity=".2" d="m16.5 20.57 7.5-4.35-7.5-3.35z"/><path fill-opacity=".6" d="m9 16.22 7.5 4.35v-7.7z"/></g></svg>' },
+    { name: 'XDC', logo: mono('XDC', '#2a5bd7') },
+    { name: 'Canton', logo: mono('C', '#3d4a5c') },
+    { name: 'Audius', logo: mono('A', '#a21fe0') },
+  ];
+  let logoSeq = 0;
+  // network mark at a given pixel size; plugins without a logo fall back to their colour
+  function logo(n, px) {
+    const svg = typeof n.logo === 'function' ? n.logo('lg' + (++logoSeq)) : n.logo;
+    return `<span class="logo" style="width:${px}px;height:${px}px">${svg || `<i style="background:${n.color}"></i>`}</span>`;
+  }
   const SPEEDS = [1, 10, 60, 600, 3600];
   let w = null, sh = null, speed = 10, paused = true, busy = false, hIdx = 0, lastRender = 0;
 
@@ -98,7 +110,7 @@
   function initLang() {
     const q = /[?&]lang=(zh|en)/.exec(location.search);
     let saved = null; try { saved = localStorage.getItem('vsim.lang'); } catch (e) { /* ignore */ }
-    S.lang = (q && q[1]) || saved || ((navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en');
+    S.lang = (q && q[1]) || saved || 'en';
     document.documentElement.lang = S.lang === 'zh' ? 'zh-CN' : 'en';
   }
   function setLang(l) {
@@ -130,19 +142,19 @@
     $('modules').innerHTML = nets.map(n => {
       const labs = S.scenarios.filter(s => s.network === n.id);
       const mod = labs[0] ? tr(labs[0].module) : n.name;
-      return `<section class="module"><div class="module-h"><span class="dot" style="background:${n.color}"></span><h2>${mod}</h2></div><p class="desc">${tr(T.moduleDesc[n.id] || '')}</p>
+      return `<section class="module"><div class="module-h">${logo(n, 28)}<h2>${mod}</h2></div><p class="desc">${tr(T.moduleDesc[n.id] || '')}</p>
         <div class="cards">${labs.map(s => {
           const d = done[s.id];
           return `<button class="card" data-s="${s.id}" style="border-top:3px solid ${n.color}">
             ${d ? `<span class="c-done">✔ ${d.grade}</span>` : ''}
-            <span class="lab">${t('labWord')} ${s.lab}</span>
+            <span class="lab">${logo(n, 14)}${t('labWord')} ${s.lab}</span>
             <h3>${tr(s.title)}</h3><p>${tr(s.tagline)}</p>
             <ul>${(s.learn || []).map(x => `<li>${tr(x)}</li>`).join('')}</ul>
             <span class="c-meta"><span>${t('difficulty')} ${'●'.repeat(s.difficulty)}${'○'.repeat(3 - s.difficulty)}</span><span>${t('minutes', { n: s.minutes })}</span></span></button>`;
         }).join('')}</div></section>`;
     }).join('');
     $('modules').querySelectorAll('.card').forEach(c => c.addEventListener('click', () => { location.hash = 's=' + c.dataset.s; }));
-    $('planned').innerHTML = `<h2>${t('plannedTitle')}</h2><div class="plan">${PLANNED.map(([n, c]) => `<span class="net-chip soon"><i style="background:${c}"></i>${n} · ${t('planned')}</span>`).join('')}</div>`;
+    $('planned').innerHTML = `<h2>${t('plannedTitle')}</h2><div class="plan">${PLANNED.map(p => `<span class="net-chip soon">${logo(p, 16)}${p.name} · ${t('planned')}</span>`).join('')}</div>`;
     $('framework').innerHTML = `<h2>${t('fwTitle')}</h2><p style="color:var(--ink-2);max-width:72ch">${t('fw')}</p>`;
     $('foot').textContent = t('foot');
   }
@@ -313,7 +325,7 @@
     sh = new S.Shell(w, term);
     paused = true; speed = 10; hIdx = 0;
     $('home').style.display = 'none'; $('play').classList.add('on');
-    $('ttl').textContent = `${scn.lab} · ${tr(scn.title)}`; $('ttl-dot').style.background = w.net.color; $('mech-net').textContent = w.net.name;
+    $('ttl').textContent = `${scn.lab} · ${tr(scn.title)}`; $('ttl-logo').innerHTML = logo(w.net, 18); $('mech-net').innerHTML = logo(w.net, 14) + w.net.name;
     w.net.panel.mount($('mech'), w);
     S.tick(w, 0.01);
     term.clear();

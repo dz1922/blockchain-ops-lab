@@ -262,8 +262,10 @@
     },
   };
 
+  const LOGO = id => `<svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="${id}" x1="360.9" y1="-37.5" x2="141.2" y2="383.3" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#00FFA3"/><stop offset="1" stop-color="#DC1FFF"/></linearGradient></defs><circle cx="16" cy="16" r="16" fill="#0b0d12"/><g transform="translate(7 8.95) scale(.0453)" fill="url(#${id})"><path d="M64.6 237.9c2.4-2.4 5.7-3.8 9.2-3.8h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1l62.7-62.7z"/><path d="M64.6 3.8C67.1 1.4 70.4 0 73.8 0h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1L64.6 3.8z"/><path d="M333.1 120.1c-2.4-2.4-5.7-3.8-9.2-3.8H6.5c-5.8 0-8.7 7-4.6 11.1l62.7 62.7c2.4 2.4 5.7 3.8 9.2 3.8h317.4c5.8 0 8.7-7 4.6-11.1l-62.7-62.7z"/></g></svg>`;
+
   S.registerNetwork({
-    id: 'solana', name: 'Solana', color: '#b6f23a',
+    id: 'solana', name: 'Solana', color: '#b6f23a', logo: LOGO,
     init(w, cfg) {
       const identity = '7nYTxq2Lw5RkV8dB3cM9pHf4Js6Ue1Zg2aNXyQrK5tPv', vote = 'Gv4kQpS2mT8xWc6RbN3hJd9Fy7Ze5Ua1LrK2nHsXqPtM', fund = 'FuNd8m3XtTq6vLZkqk3vW8a2QVeG5r7cUTh2JbVyN1Ks', unstaked = 'Un5tkd9Yc2pQ4vTLm8rJx1DsoW7nHqA3eBfK6gZRyM2p';
       w.chain = { identity, vote, fund, slot0: 312906864, lastVote: 312906863, bal: { [identity]: cfg.balance ?? 9.4, [fund]: 412.5 }, mainnetBal: {}, burnPerDay: cfg.burnPerDay ?? 2.1, credits: 16 * 0.985 * (312906864 % EPOCH), airdrops: 0, keyfiles: {} };

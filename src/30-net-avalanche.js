@@ -114,7 +114,7 @@
   /* ---------- world setup ---------- */
   function makeNode(w, sp) {
     const n = S.makeHost({
-      id: sp.moniker, moniker: sp.moniker, hostname: `validator-avax-${sp.moniker}`, instanceId: sp.instanceId, region: sp.region,
+      id: sp.moniker, moniker: sp.moniker, hostname: `validator-${sp.moniker}`, instanceId: sp.instanceId, region: sp.region,
       ip: sp.ip, probeIp: sp.probeIp || sp.ip, nodeID: sp.nodeID, kind: 'node', homeUser: 'ubuntu',
       mem: { total: sp.memGB * 1024, used: Math.round(sp.memGB * 1024 * 0.48) }, disk: { size: 1664, used: 1302, dev: '/dev/nvme0n1p1' },
       instanceType: sp.type, upBase: 86400 * 6, bootAt: 0,
@@ -263,7 +263,7 @@
     { name: 'AvalancheRewardingStakeLow', severity: 'warning', for: 300, check: w => nodesOf(w).filter(n => av(n).validator && uptimePct(n) < 95).map(n => ({ instance: n.hostname, summary: `P-Chain uptime ${uptimePct(n).toFixed(2)}% < 95%` })) },
     { name: 'AvalancheRewardingStakeCritical', severity: 'critical', for: 600, check: w => nodesOf(w).filter(n => av(n).validator && uptimePct(n) < 90).map(n => ({ instance: n.hostname, summary: `P-Chain uptime ${uptimePct(n).toFixed(2)}% < 90% (below the reward threshold)` })) },
     { name: 'AvalancheBlocksBehind', severity: 'warning', for: 300, check: w => nodesOf(w).filter(n => active(n) && av(n).replay > 100).map(n => ({ instance: n.hostname, summary: `C-Chain ${Math.round(av(n).replay)} blocks behind` })) },
-    { name: 'ExternalProbeFailure', severity: 'critical', for: 300, check: w => nodesOf(w).filter(n => !(active(n) && n.probeIp === n.ip && !n.sgBlocked)).map(n => ({ instance: `${n.probeIp}:9651`, summary: `validator-avax-${n.moniker} · tcp_connect failed from us-east-1, eu-west-1, ap-southeast-1` })) },
+    { name: 'ExternalProbeFailure', severity: 'critical', for: 300, check: w => nodesOf(w).filter(n => !(active(n) && n.probeIp === n.ip && !n.sgBlocked)).map(n => ({ instance: `${n.probeIp}:9651`, summary: `validator-${n.moniker} · tcp_connect failed from us-east-1, eu-west-1, ap-southeast-1` })) },
     { name: 'ComponentUpgradeAvailable', severity: 'warning', for: 0, check: w => w.chain.showUpgradeAlert ? nodesOf(w).filter(n => S.semverCmp(binVer(S.fsRead(w, n, BINP)) || '0.0.0', MIN) < 0).map(n => ({ instance: `avalanche/${n.moniker}`, summary: `avalanchego ${binVer(S.fsRead(w, n, BINP))} → ${MIN} · instance=fleet-watchtower` })) : [] },
   ];
 
@@ -330,7 +330,7 @@
       }
       if (svcName === 'ec2' && op === 'describe-instances') {
         const region = f.region || 'us-east-1';
-        const rows = Object.values(ctx.w.nodes).filter(n => n.region === region).map(n => [`validator-avax-${n.moniker}`, n.instanceId, n.ip, n.instanceType, 'running']);
+        const rows = Object.values(ctx.w.nodes).filter(n => n.region === region).map(n => [`validator-${n.moniker}`, n.instanceId, n.ip, n.instanceType, 'running']);
         if (!rows.length) return `${C.gray(S.L(`（${region} 没有实例。节点所在区域：`, `(no instances in ${region}. Nodes run in: `) + [...new Set(Object.values(ctx.w.nodes).map(n => n.region))].join(', ') + S.L('）', ')'))}\n`;
         return S.table(rows, ['Name', 'InstanceId', 'PublicIpAddress', 'InstanceType', 'State']) + '\n';
       }
@@ -463,8 +463,10 @@
     },
   };
 
+  const LOGO = () => '<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="16" fill="#E84142"/><path transform="translate(0 1.8)" fill="#fff" d="M11.47 22.37H8.37C7.71 22.37 7.39 22.37 7.2 22.25C6.98 22.11 6.85 21.88 6.84 21.63C6.83 21.4 6.99 21.12 7.31 20.55L14.97 7.05C15.3 6.47 15.46 6.19 15.67 6.08C15.89 5.97 16.16 5.97 16.39 6.08C16.59 6.19 16.76 6.47 17.08 7.05L18.66 9.8C19.02 10.42 19.2 10.74 19.28 11.06C19.36 11.42 19.36 11.8 19.28 12.16C19.2 12.49 19.02 12.8 18.66 13.42L14.64 20.54C14.27 21.18 14.09 21.49 13.85 21.73C13.57 21.99 13.25 22.18 12.89 22.28C12.56 22.37 12.2 22.37 11.47 22.37ZM19.31 22.37H23.75C24.41 22.37 24.74 22.37 24.93 22.24C25.15 22.11 25.28 21.87 25.29 21.62C25.3 21.4 25.15 21.13 24.84 20.59L22.58 16.73C22.24 16.16 22.08 15.89 21.88 15.79C21.65 15.67 21.39 15.67 21.17 15.79C20.96 15.89 20.8 16.17 20.47 16.73L18.25 20.54C17.92 21.12 17.76 21.4 17.77 21.63C17.79 21.88 17.91 22.11 18.13 22.25C18.32 22.37 18.65 22.37 19.31 22.37Z"/></svg>';
+
   S.registerNetwork({
-    id: 'avalanche', name: 'Avalanche', color: '#f5a623',
+    id: 'avalanche', name: 'Avalanche', color: '#f5a623', logo: LOGO,
     init(w, cfg) {
       w.chain = { activation: cfg.activation ?? null, upgrade: cfg.upgrade || 'Helicon', cHeight0: 87015424, pr: cfg.pr || null, primitive: cfg.primitive || 'v2', showUpgradeAlert: !!cfg.showUpgradeAlert };
       (cfg.nodes || []).forEach(sp => { w.nodes[sp.moniker] = makeNode(w, sp); });

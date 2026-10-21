@@ -83,7 +83,7 @@ module.exports = [
     o.push(await T.cmd("BEACON=$(docker ps -a --format '{{.Names}} {{.Image}} {{.Command}}' | awk '/teku/ && !/vc/{print $1; exit}'); echo $BEACON"));
     o.push(await T.cmd('docker logs --tail 8 $BEACON'));
     o.push(await T.cmd("docker inspect $BEACON --format 'status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}} created={{.Created}}'"));
-    o.push(await T.cmd('cat /var/log/stereum-update.log | grep 07-03'));
+    o.push(await T.cmd('cat /var/log/stereum-update.log | grep 06-17'));
     o.push(await T.cmd('crontab -l'));
     o.push(await T.cmd('systemctl status besu | head -3'));
     o.push(await T.cmd("echo '  - --p2p-quic-port=9002' >> /etc/stereum/services/${BEACON}.yaml"));

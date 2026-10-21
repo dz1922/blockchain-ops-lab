@@ -74,8 +74,8 @@
     limit: 3 * 3600, holdFor: 60,
     score,
     debrief: LL(
-      '本练习参考了一家质押服务商在 2026 年 9 月的一次故障。Teku beacon 节点挂起了 75 个小时，进程一直没有退出。Besu 全程健康，所以监控 Besu 存活的 <code>EthExecutionDown</code> 从未触发，验证者连续三天错过任务。事后增加了两样东西：<code>EthExecutionStalled</code>，在执行层 10 分钟没有导入区块时报警；以及 eth-engine-watchdog，在 Besu 健康且有对等节点时自动重启 teku-beacon，在重启无济于事时升级给值班人员。看门狗从不重启验证者客户端。停掉的看门狗什么也保护不了，这就是 <code>EthWatchdogStale</code> 存在的原因。',
-      'This lab is based on an outage at a staking operator in September 2026. The Teku beacon node hung for 75 hours and the process never exited. Besu stayed healthy throughout, so <code>EthExecutionDown</code>, which watches Besu liveness, never fired, and the validator missed its duties for three days. Two things were added afterwards: <code>EthExecutionStalled</code>, which pages when the execution layer imports no blocks for 10 minutes, and eth-engine-watchdog, which restarts teku-beacon when that happens while Besu is healthy and peered, and escalates to a human when a restart cannot help. The watchdog never restarts the validator client. A watchdog that is not running protects nothing, which is why <code>EthWatchdogStale</code> exists.'),
+      'beacon 节点可能挂起而不退出。进程级的检查，例如 systemd 状态、端口是否监听、执行客户端是否存活，都会一直显示正常，而验证者的每一次任务都在错过。执行客户端只在 beacon 通过 Engine API 交给它区块时才会导入，所以最可靠的信号是执行层的区块高度是否在前进：<code>EthExecutionStalled</code> 在 10 分钟没有导入区块时报警，<code>EthExecutionDown</code> 这类存活告警则看不到这种故障。自动恢复可以交给看门狗：Besu 健康且有对等节点时重启 teku-beacon，重启无济于事时升级给值班人员。看门狗不应重启验证者客户端，因为开启 doppelganger 检测时每次重启都要损失两个 epoch 的任务。停掉的看门狗什么也保护不了，这就是 <code>EthWatchdogStale</code> 存在的原因。',
+      'A beacon node can hang without exiting. Process-level checks such as the systemd state, an open port or a live execution client all stay green while the validator misses every duty. The execution client only imports blocks that the beacon hands it over the Engine API, so the reliable signal is whether the execution layer\'s block number advances: <code>EthExecutionStalled</code> pages when no block is imported for 10 minutes, while a liveness alert such as <code>EthExecutionDown</code> cannot see this failure. Automatic recovery belongs to a watchdog that restarts teku-beacon when Besu is healthy and peered, and escalates to a human when a restart cannot help. The watchdog should never restart the validator client, because with doppelganger detection every restart costs two epochs of duties. A watchdog that is not running protects nothing, which is why <code>EthWatchdogStale</code> exists.'),
   });
 
   /* ---------------------------------------------------------- E2 */
@@ -90,9 +90,9 @@
       LL('在 Stereum 服务定义里修正客户端参数，让修复经得住下一次更新', 'Fixing a client flag in the Stereum service definition so the fix survives the next update'),
     ],
     brief: LL(
-      `<p><b>eth-01</b> 运行一套由 Stereum 管理的 docker：Besu、Teku beacon 节点、Teku 验证者客户端和 mev-boost，容器名为 <code>stereum-&lt;id&gt;</code>，配置在 <code>/etc/stereum/services/&lt;id&gt;.yaml</code>。root 的 cron 每天 00:00 UTC 运行 Stereum 的自动更新。</p><p>现在是 2026 年 7 月 3 日 08:40 UTC。<b>EthHeadSlotStalled</b> 和 <b>EthExecutionStalled</b> 正在告警，验证者 1234567 从午夜后不久开始错过了所有任务。</p><p>请找到原因并修复，并且确保下一次自动更新不会把问题带回来。</p>`,
-      `<p><b>eth-01</b> runs a Stereum-managed docker stack: Besu, a Teku beacon node, a Teku validator client and mev-boost, in containers named <code>stereum-&lt;id&gt;</code> and configured by <code>/etc/stereum/services/&lt;id&gt;.yaml</code>. A root cron job runs Stereum's unattended update every day at 00:00 UTC.</p><p>It is 08:40 UTC on 3 July 2026. <b>EthHeadSlotStalled</b> and <b>EthExecutionStalled</b> are firing, and validator 1234567 has missed every duty since shortly after midnight.</p><p>Find the cause and fix it, in a way that the next unattended update does not bring it back.</p>`),
-    startAt: '2026-07-03T08:40:00Z', alertAge: 7 * 3600,
+      `<p><b>eth-01</b> 运行一套由 Stereum 管理的 docker：Besu、Teku beacon 节点、Teku 验证者客户端和 mev-boost，容器名为 <code>stereum-&lt;id&gt;</code>，配置在 <code>/etc/stereum/services/&lt;id&gt;.yaml</code>。root 的 cron 每天 00:00 UTC 运行 Stereum 的自动更新。</p><p>现在是 08:40 UTC。<b>EthHeadSlotStalled</b> 和 <b>EthExecutionStalled</b> 正在告警，验证者 1234567 从午夜后不久开始错过了所有任务。</p><p>请找到原因并修复，并且确保下一次自动更新不会把问题带回来。</p>`,
+      `<p><b>eth-01</b> runs a Stereum-managed docker stack: Besu, a Teku beacon node, a Teku validator client and mev-boost, in containers named <code>stereum-&lt;id&gt;</code> and configured by <code>/etc/stereum/services/&lt;id&gt;.yaml</code>. A root cron job runs Stereum's unattended update every day at 00:00 UTC.</p><p>It is 08:40 UTC. <b>EthHeadSlotStalled</b> and <b>EthExecutionStalled</b> are firing, and validator 1234567 has missed every duty since shortly after midnight.</p><p>Find the cause and fix it, in a way that the next unattended update does not bring it back.</p>`),
+    startAt: '2026-06-17T08:40:00Z', alertAge: 7 * 3600,
     config: {
       keyOn: 'eth-01', missedEpochs: 81, missReason: 'java.net.ConnectException: Connection refused',
       hosts: [{ id: 'eth-01', versions: { besu: '26.6.0', teku: '26.7.0', mev: '1.10.1' }, clBehind: Math.round(-E2_CRASH / 12), crashLoop: { restarts: 708, createdAt: E2_CRASH }, created: { cl: E2_CRASH, vc: E2_CRASH } }],
@@ -111,10 +111,10 @@
       });
       const el = n.eth.c.el;
       for (let t = -1800; t < 0; t += 120) h.preLog(w, n, el.name, t, 'WARN', h.besuLine(w, t, 'WARN', 'EngineQosTimer', 'Execution engine not called in 120 seconds, consensus client may not be connected'));
-      const day = '2026-07-03';
+      const day = '2026-06-17';
       S.fsWrite(n, '/var/log/stereum-update.log', [
-        `2026-07-02 00:00:01 UTC unattended-update: checking images (lane: stable)`,
-        `2026-07-02 00:00:07 UTC unattended-update: all images up to date`,
+        `2026-06-16 00:00:01 UTC unattended-update: checking images (lane: stable)`,
+        `2026-06-16 00:00:07 UTC unattended-update: all images up to date`,
         `${day} 00:00:01 UTC unattended-update: checking images (lane: stable)`,
         `${day} 00:00:09 UTC unattended-update: hyperledger/besu 26.6.0 up to date`,
         `${day} 00:00:12 UTC unattended-update: consensys/teku 26.6.1 -> 26.7.0 (TekuBeaconService ${BEACON_ID}, TekuValidatorService ${VC_ID})`,
@@ -147,8 +147,8 @@
     limit: 5 * 3600, holdFor: 60,
     score,
     debrief: LL(
-      '本练习参考了一家质押服务商在 2026 年 7 月的一次故障。午夜 UTC，Stereum 的自动更新把 Teku 从 26.6.1 升到 26.7.0。新版本默认在 UDP 9001 上启用 QUIC，而节点早先用 <code>--p2p-port</code> 把 P2P 端口设成了 9001。discovery 绑定失败，beacon 节点大约每 45 秒退出一次，持续了 25 小时才被发现。期间没有任何告警：存活告警要求目标连续 2 分钟不可达，而反复重启让所有"瞬时值加 for 窗口"的规则一次次清零。修复方法是在服务 yaml 中固定 <code>--p2p-quic-port=9002</code> 并重建容器。现在抓这类故障的是 <code>EthHeadSlotStalled</code>，它只问一件事：head slot 在 15 分钟内有没有前进。运维手册里也多了一句：如果故障恰好发生在 UTC 午夜，先怀疑自动更新。',
-      'This lab is based on an outage at a staking operator in July 2026. At midnight UTC the Stereum unattended update moved Teku from 26.6.1 to 26.7.0. The new release enabled QUIC by default on UDP 9001, the port the node had already been given with <code>--p2p-port</code>. Discovery failed to bind and the beacon node exited about every 45 seconds, for 25 hours, before anyone noticed. No alert fired: the liveness rule needed the target down for two straight minutes, and the restarts kept resetting every rule built on an instant value with a for: window. The fix was to pin <code>--p2p-quic-port=9002</code> in the service yaml and recreate the container. The rule that now catches this kind of failure is <code>EthHeadSlotStalled</code>, which asks one thing: did the head slot advance in 15 minutes. The runbook also gained a line: if something broke at exactly midnight UTC, suspect the updater first.'),
+      '无人值守的客户端更新可能改变默认值，例如在一个已经被占用的端口上启用 QUIC。这里的新版本默认在 UDP 9001 上启用 QUIC，而节点早先用 <code>--p2p-port</code> 把 P2P 端口设成了 9001。discovery 绑定失败，beacon 节点每隔几十秒退出一次。这样的崩溃循环可以长时间不触发任何告警：存活告警要求目标连续 2 分钟不可达，而反复重启会让所有"瞬时值加 for 窗口"的规则一次次清零。能抓住它的是 <code>EthHeadSlotStalled</code> 这类规则，它只问一件事：head slot 在 15 分钟内有没有前进。修复方法是在服务定义中固定 <code>--p2p-quic-port</code> 并重建容器，这样下一次自动更新也会保留它。如果故障恰好发生在 UTC 午夜，先查自动更新的日志。',
+      'An unattended client update can change defaults, such as enabling QUIC on a port that is already in use. Here the new release enables QUIC by default on UDP 9001, the port the node had already been given with <code>--p2p-port</code>. Discovery fails to bind and the beacon node exits every few tens of seconds. A crash loop like this can run for a long time without any alert: a liveness rule needs the target down for two straight minutes, and the restarts keep resetting every rule built on an instant value with a for: window. What catches it is a rule like <code>EthHeadSlotStalled</code>, which asks one thing: did the head slot advance in 15 minutes. The fix is to pin <code>--p2p-quic-port</code> in the service definition and recreate the container, so the next unattended update keeps it. If something broke at exactly midnight UTC, check the updater\'s log first.'),
   });
 
   /* ---------------------------------------------------------- E3 */
@@ -164,7 +164,7 @@
     brief: LL(
       `<p>验证者 1234567 运行在 <b>eth-01</b> 上。这是一台即将退役的 Stereum docker 主机，每天 00:00 UTC 自动更新。接替它的 <b>eth-02</b> 用 systemd 运行 Besu 和 Teku，两边的客户端都已同步，eth-02 的 teku-vc 正在运行但没有任何钥匙。同事已经把 keystore 和密码文件放在 eth-02 的 <code>/root/migration</code>。迁移笔记在 <code>~/NOTES.md</code>。</p><p>现在是 22:35 UTC。请完成迁移：钥匙在 eth-02 上签名，eth-01 再也无法用它签名，eth-02 的 slashing 保护数据库掌握 eth-01 签过的全部记录。</p>`,
       `<p>Validator 1234567 runs on <b>eth-01</b>, a Stereum docker host that is being retired and updates itself every day at 00:00 UTC. Its replacement <b>eth-02</b> runs Besu and Teku under systemd. The clients on both hosts are in sync, and teku-vc on eth-02 is running with no keys. A colleague has staged the keystore and its password file in <code>/root/migration</code> on eth-02. The migration notes are in <code>~/NOTES.md</code>.</p><p>It is 22:35 UTC. Move the key so that it signs on eth-02, eth-01 can never sign with it again, and the slashing protection database on eth-02 knows everything eth-01 signed.</p>`),
-    startAt: '2026-08-10T22:35:00Z',
+    startAt: '2026-09-02T22:35:00Z',
     config: {
       keyOn: 'eth-01', missedEpochs: 0, scatter: true,
       hosts: [
@@ -202,7 +202,7 @@
       return [[LL('验证者状态', 'Validator status'), v.slashed != null ? 'slashed' : 'active_ongoing', v.slashed != null ? 'bad' : 'good'], ...base.slice(0, 2)];
     },
     debrief: LL(
-      '本练习参考了一次真实的迁移：一家质押服务商把以太坊验证者从 Stereum 管理的主机迁到新的 systemd 主机上，随后关掉了旧主机。那次迁移没有出问题，因为顺序是对的。以太坊主网上的罚没，大多数就发生在这类变更中：钥匙被复制到新机器，或者搭了主备切换，而旧客户端仍然可能签名。安全的顺序是：先在源头停止签名，并确保它不能带着钥匙重新启动；导出 slashing 保护记录；在目标机器上导入；最后载入钥匙并启动，最好开启 doppelganger 检测。在 Stereum 主机上只执行 <code>docker stop</code> 不够，因为夜间自动更新会按服务定义重建每一个容器。',
-      'This lab is based on a real migration: a staking operator moved its Ethereum validator from a Stereum-managed host to a new systemd host and then shut the old host down. Nothing went wrong, because the order was right. Most slashings on Ethereum mainnet happen during exactly this kind of change: a key copied to a new machine, or a failover setup, while the old client could still sign. The safe order is: stop signing at the source and make sure it cannot start again with the key; export the slashing protection history; import it on the destination; only then load the key and start, preferably with doppelganger detection. On a Stereum host <code>docker stop</code> alone is not enough, because the nightly unattended update recreates every container from its service definition.'),
+      '当钥匙在机器之间迁移时，罚没的风险最高。以太坊主网上的罚没大多发生在这类变更中：钥匙被复制到新机器，或者搭了主备切换，而旧客户端仍然可能签名。安全的顺序是：先在源头停止签名，并确保它不能带着钥匙重新启动；导出 slashing 保护记录；在目标机器上导入；最后载入钥匙并启动，最好开启 doppelganger 检测。Keymanager API 的删除调用把前两步合成一步。在有夜间自动更新的 docker 主机上，只执行 <code>docker stop</code> 不够，因为更新会按服务定义重建每一个容器，旧的签名方会在午夜重新出现。',
+      'When a key moves between machines, the risk of slashing is at its highest. Most slashings on Ethereum mainnet happen during exactly this kind of change: a key copied to a new machine, or a failover setup, while the old client could still sign. The safe order is: stop signing at the source and make sure it cannot start again with the key; export the slashing protection history; import it on the destination; only then load the key and start, preferably with doppelganger detection. The Keymanager API delete call does the first two steps in one. On a docker host with nightly unattended updates, <code>docker stop</code> alone is not enough, because the update recreates every container from its service definition and the old signer comes back at midnight.'),
   });
 })(SIM);

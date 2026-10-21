@@ -276,7 +276,7 @@
     S.fsWrite(n, `${ST}/teku-${ids.vc}/data/validator/api/validator-api.p12`, '(PKCS#12 keystore)', { mode: '600', owner: '2000' });
     S.fsWrite(n, '/etc/stereum/stereum.yaml', `stereum_settings:\n  settings:\n    controls_install_path: /opt/stereum\n    os_user: stereum\n    updates:\n      lane: stable\n      unattended:\n        install: true\n`);
     S.fsWrite(n, '/etc/stereum/services/prometheus/prometheus.yml', 'global:\n  scrape_interval: 15s\nscrape_configs:\n  - job_name: besu\n  - job_name: teku_beacon\n  - job_name: teku_validator\n  - job_name: node_exporter\n');
-    S.fsWrite(n, '/usr/local/bin/stereum-recreate', '#!/bin/bash\n# ops helper: recreate one Stereum service container from its service yaml.\n# Keeps the container name (stereum-<id>), the "stereum" network and the volumes,\n# and re-reads image: and command: from /etc/stereum/services/<id>.yaml.\n# A plain `docker restart` keeps the old container config and does NOT re-read the yaml.\nset -euo pipefail\nid="${1#stereum-}"\nyaml="/etc/stereum/services/${id}.yaml"\n[ -f "$yaml" ] || { echo "stereum-recreate: no such service: $yaml" >&2; exit 1; }\n# ... renders `docker run -d --name stereum-$id --network stereum --restart unless-stopped ...` from $yaml\n', { mode: '755' });
+    S.fsWrite(n, '/usr/local/bin/stereum-recreate', '#!/bin/bash\n# helper: recreate one Stereum service container from its service yaml.\n# Keeps the container name (stereum-<id>), the "stereum" network and the volumes,\n# and re-reads image: and command: from /etc/stereum/services/<id>.yaml.\n# A plain `docker restart` keeps the old container config and does NOT re-read the yaml.\nset -euo pipefail\nid="${1#stereum-}"\nyaml="/etc/stereum/services/${id}.yaml"\n[ -f "$yaml" ] || { echo "stereum-recreate: no such service: $yaml" >&2; exit 1; }\n# ... renders `docker run -d --name stereum-$id --network stereum --restart unless-stopped ...` from $yaml\n', { mode: '755' });
     S.fsWrite(n, '/var/log/stereum-update.log', sp.updateLog || '');
     n.commands = { 'stereum-recreate': stereumRecreate };
     n.services.docker = { name: 'docker', desc: 'Docker Application Container Engine', unitPath: '/usr/lib/systemd/system/docker.service', state: 'active', since: -86400 * 41, pid: 1088, exec: '/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock' };
@@ -898,7 +898,8 @@
     if (sub === 'list-timers') {
       const rows = [];
       if (T && T.active) rows.push([S.fmtDate(new Date(ctx.w.base + T.next * 1000)), `${S.fmtDur(Math.max(0, T.next - ctx.w.t))} left`, S.fmtDate(new Date(ctx.w.base + T.lastRun * 1000)), `${S.fmtDur(ctx.w.t - T.lastRun)} ago`, 'eth-engine-watchdog.timer', 'eth-engine-watchdog.service']);
-      rows.push(['Wed 2026-10-07 00:00:00 UTC', '-', 'Tue 2026-10-06 00:00:01 UTC', '-', 'logrotate.timer', 'logrotate.service']);
+      const day = Math.floor(ctx.w.now() / 86400000) * 86400000;
+      rows.push([S.fmtDate(new Date(day + 86400000)), '-', S.fmtDate(new Date(day + 1000)), '-', 'logrotate.timer', 'logrotate.service']);
       return S.table(rows, ['NEXT', 'LEFT', 'LAST', 'PASSED', 'UNIT', 'ACTIVATES']) + `\n${rows.length} timers listed.\n`;
     }
     if (!units.some(isTimer)) return S.commands.systemctl(ctx);

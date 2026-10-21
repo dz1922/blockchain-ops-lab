@@ -1,0 +1,67 @@
+name: Test and deploy
+
+# main → production on Vercel; pull requests → a preview URL in the job summary.
+# Needs the repository secret VERCEL_TOKEN, and optionally the variable VERCEL_SCOPE
+# (the Vercel team slug; leave unset to deploy under the token owner's account).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run check
+      - run: npm run build
+      - name: Play every lab end to end (en, zh)
+        run: npm test
+      - uses: actions/upload-artifact@v7
+        with:
+          name: site
+          path: dist
+          include-hidden-files: true
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-24.04
+    # Fork PRs get no secrets, so they stop at the test job.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_SCOPE: ${{ vars.VERCEL_SCOPE }}
+      VERCEL_PROJECT: blockchain-ops-lab
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: site
+          path: dist
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Deploy to Vercel
+        working-directory: dist
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then echo "::error::VERCEL_TOKEN secret is not set"; exit 1; fi
+          scope=(); [ -n "$VERCEL_SCOPE" ] && scope=(--scope "$VERCEL_SCOPE")
+          npx --yes vercel@latest link --yes --project "$VERCEL_PROJECT" "${scope[@]}" --token "$VERCEL_TOKEN"
+          prod=(); [ "$GITHUB_REF" = "refs/heads/main" ] && [ "$GITHUB_EVENT_NAME" != "pull_request" ] && prod=(--prod)
+          url=$(npx --yes vercel@latest deploy "${prod[@]}" --yes "${scope[@]}" --token "$VERCEL_TOKEN")
+          echo "### Deployed ${prod:+(production)}" >> "$GITHUB_STEP_SUMMARY"
+          echo "$url" >> "$GITHUB_STEP_SUMMARY"

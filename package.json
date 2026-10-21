@@ -1,0 +1,13 @@
+{
+  "name": "blockchain-ops-lab",
+  "private": true,
+  "description": "Validator Operations Lab: browser-based hands-on labs for running blockchain validators",
+  "scripts": {
+    "build": "./build.sh",
+    "check": "for f in src/*.js; do node --check \"$f\" || exit 1; done",
+    "test": "LANGX=en node test/play.js && LANGX=zh node test/play.js"
+  },
+  "devDependencies": {
+    "playwright": "^1.64.1"
+  }
+}

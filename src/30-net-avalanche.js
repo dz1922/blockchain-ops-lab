@@ -5,6 +5,8 @@
    - network upgrade activation with a minimum version (Helicon / 1.15.0)
    - replay after (re)start, health checks, P-Chain uptime as seen by others
    - advertised public-ip vs actual IP (reachability on 9651)
+   - root disk usage, the 512 MiB low-disk shutdown, online EBS growth
+   - end-of-period uptime and planned downtime (instance resizes)
    ============================================================ */
 (function (S) {
   'use strict';
@@ -35,13 +37,34 @@
   const uptimePct = n => 100 * (1 - av(n).up.down / av(n).up.elapsed);
   const projected = n => 100 * (1 - av(n).up.down / av(n).up.period);
   const tip = w => Math.floor(w.chain.cHeight0 + w.t / 2);
+  const GiB = 1073741824, MIN_FREE = 512 * 1048576, WARN_FREE = GiB;
+  const JDIR = '/var/log/journal/ec2a7f3c9e1b4d5f8a6c2e0b7d9f1a3c';
+  const hasDb = n => Object.keys(n.fs).some(k => k.startsWith(DB + '/'));
+  function sizeUnder(n, p) {
+    let b = 0;
+    Object.keys(n.fs).forEach(k => { if (k === p || k.startsWith(p === '/' ? '/' : p + '/')) b += n.fs[k].size || 0; });
+    const DATA = DB + '/mainnet/v1.4.5';
+    if (hasDb(n) && (DATA === p || DATA.startsWith(p === '/' ? '/' : p + '/'))) b += av(n).dbGB * GiB;
+    if (p === '/') b += n.disk.base * GiB;
+    return b;
+  }
+  const diskUsed = n => sizeUnder(n, '/') / GiB;
+  const availGB = n => Math.max(0, n.disk.size - diskUsed(n));
+  const availPct = n => 100 * availGB(n) / n.disk.size;
+  const periodLeft = n => av(n).up.period - av(n).up.elapsed;
+  function human(b) {
+    const u = ['', 'K', 'M', 'G', 'T']; let i = 0, v = b;
+    while (v >= 1024 && i < 4) { v /= 1024; i++; }
+    if (i === 0) return String(Math.ceil(v));
+    return (v < 10 ? (Math.ceil(v * 10) / 10).toFixed(1) : String(Math.ceil(v))) + u[i];
+  }
   function healthChecks(w, n) {
     const ok = m => ({ message: m, timestamp: S.isoTime(w.now()), duration: 12034, contiguousFailures: 0, timeOfFirstFailure: null });
     const bad = (e, since) => ({ error: e, timestamp: S.isoTime(w.now()), duration: 9087, contiguousFailures: Math.max(1, Math.floor((w.t - since) / 30)), timeOfFirstFailure: S.isoTime(new Date(w.base + since * 1000)) });
     const s = svc(n), c = {};
     c.bls = ok({ blsKey: 'matches registered key' });
     c.database = ok(null);
-    c.diskspace = ok({ availableDiskBytes: (n.disk.size - n.disk.used) * 1073741824 });
+    c.diskspace = availGB(n) * GiB < WARN_FREE ? bad(`remaining available disk space (${Math.round(availGB(n) * GiB)}) is below the warning threshold of disk space (${WARN_FREE})`, s.since) : ok({ availableDiskBytes: Math.round(availGB(n) * GiB) });
     c.bootstrapped = av(n).replay > 0 ? bad(`chains not bootstrapped: [C] (executing blocks, ${Math.round(av(n).replay)} remaining)`, s.since) : ok([]);
     if (!versionOk(w, n)) c.network = bad(`node version avalanchego/${av(n).running} is incompatible with activated network upgrade ${w.chain.upgrade} (requires >= ${MIN})`, act(w));
     else if (!ipOk(w, n)) c.network = bad('primary network validator has no inbound connections', s.since);
@@ -73,6 +96,7 @@
       return crash(w, n, 1);
     }
     log(w, n, 'INFO', `<main> app/app.go:183 initializing node {"version": "avalanchego/${ver}", "commit": "a3f40fd", "nodeID": "${n.nodeID}"}`);
+    if (availGB(n) * GiB < MIN_FREE) return lowDisk(w, n);
     if (a.db && S.semverCmp(ver, a.db) < 0) {
       log(w, n, 'INFO', '<main> chains/manager.go:301 creating chain {"subnetID": "11111111111111111111111111111111LpoYY", "chainID": "11111111111111111111111111111111LpoYY"}');
       log(w, n, 'FATAL', 'chains/manager.go:393 error creating required chain error while creating new snowman vm failed to load the database state: unknown codec version');
@@ -93,6 +117,11 @@
     s.state = 'active'; a.running = ver; a.lastProgressLog = w.t; a.stoppedAt = null;
     log(w, n, 'INFO', `<main> node/node.go:1490 node started {"publicIP": "${c['public-ip']}", "stakingPort": 9651, "replayingBlocks": ${Math.round(a.replay)}}`);
     return null;
+  }
+  function lowDisk(w, n) {
+    log(w, n, 'FATAL', `<main> node/node.go:1318 low on disk space. Shutting down... {"remainingDiskBytes": ${Math.round(availGB(n) * GiB)}, "requiredDiskBytes": ${MIN_FREE}}`);
+    S.lesson(w, 'lowdisk', S.LL('磁盘不足时节点会自行退出', 'The node stops itself when the disk is nearly full'), S.LL('可用空间低于 1 GiB 时，avalanchego 的 diskspace 健康检查开始失败；低于 512 MiB 时，节点会自行退出，以免写坏数据库。systemd 每 5 秒把它拉起来一次，它每次都会再次退出。腾出空间或者扩容根卷之后，下一次自动重启就会恢复，不需要删除数据库。', 'Below 1 GiB of free space the diskspace health check fails. Below 512 MiB avalanchego shuts itself down so it does not corrupt the database. systemd starts it again every 5 seconds and it exits again each time. Once space is freed or the root volume is grown, the next automatic restart recovers. The database does not need to be deleted.'));
+    return crash(w, n, 1);
   }
   function crash(w, n, code) {
     const s = svc(n), a = av(n);
@@ -116,24 +145,34 @@
     const n = S.makeHost({
       id: sp.moniker, moniker: sp.moniker, hostname: `validator-${sp.moniker}`, instanceId: sp.instanceId, region: sp.region,
       ip: sp.ip, probeIp: sp.probeIp || sp.ip, nodeID: sp.nodeID, kind: 'node', homeUser: 'ubuntu',
-      mem: { total: sp.memGB * 1024, used: Math.round(sp.memGB * 1024 * 0.48) }, disk: { size: 1664, used: 1302, dev: '/dev/nvme0n1p1' },
+      mem: { total: sp.memGB * 1024, used: Math.round(sp.memGB * 1024 * 0.48) }, disk: { size: (sp.disk && sp.disk.size) || 1664, used: 1302, dev: '/dev/nvme0n1p1' },
       instanceType: sp.type, upBase: 86400 * 6, bootAt: 0,
     });
     n.av = {
       db: sp.db, running: null, replay: 0, peers: sp.peers || 2370, stoppedAt: null, nextRestart: null, codecCrashes: 0,
       validator: sp.validator !== false, offline: 0, lastWarn: -1e9, lastErr: -1e9, lastIpWarn: -1e9, lastInfo: 0,
       up: { elapsed: sp.elapsedDays * 86400, down: sp.downHours * 3600, period: sp.periodDays * 86400 }, potentialReward: sp.reward, weight: sp.weight,
+      dbGB: (sp.disk && sp.disk.dbGB) || 1280,
     };
+    n.vol = { id: 'vol-0' + sp.instanceId.slice(3).split('').reverse().join(''), size: n.disk.size, visible: n.disk.size, part: n.disk.size, type: 'gp3', iops: 3000, throughput: 125, mods: [] };
     S.fsWrite(n, BINP, BIN(sp.bin), { mode: '755', owner: 'root', size: 98234112 });
     S.fsWrite(n, CFGP, JSON.stringify({ 'network-id': 'mainnet', 'public-ip': sp.cfgIp || sp.ip, 'http-host': '127.0.0.1', 'db-dir': DB, 'sybil-protection-enabled': true, 'staking-port': 9651, 'api-admin-enabled': true, 'api-health-enabled': true, 'api-info-enabled': true }, null, 2) + '\n');
     S.fsWrite(n, '/etc/systemd/system/avalanchego.service', `[Unit]\nDescription=Avalanche Node\nWants=network-online.target\nAfter=network-online.target\nRequiresMountsFor=${DB}\n\n[Service]\nUser=ubuntu\nGroup=ubuntu\nType=simple\nExecStart=${BINP} --config-file=${CFGP}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=120\nLimitNOFILE=32768\n\n[Install]\nWantedBy=multi-user.target\n`);
     ['staker.crt', 'staker.key', 'signer.key'].forEach(f => S.fsWrite(n, `${STAKING}/${f}`, f === 'staker.crt' ? '-----BEGIN CERTIFICATE-----\nMIIFNzCCAx+gAwIBAgIBADANBgkqhkiG9w0BAQsFADAAMCAXDTk5MTIzMTAwMDAw\n(simulated)\n-----END CERTIFICATE-----\n' : f === 'staker.key' ? '-----BEGIN PRIVATE KEY-----\n(simulated — never print a real private key)\n-----END PRIVATE KEY-----\n' : '(32-byte BLS secret key, binary)', { mode: '400', owner: 'ubuntu' }));
     S.fsWrite(n, '/home/ubuntu/.avalanchego/configs/chains/C/config.json', '{"state-sync-enabled": true}\n', { owner: 'ubuntu' });
     S.fsWrite(n, `${DB}/mainnet/v1.4.5/MANIFEST-004211`, '(leveldb manifest)', { owner: 'ubuntu', size: 1114 });
+    ['CURRENT', 'LOCK', 'LOG', '3204198.ldb', '3204203.ldb', '3204209.ldb'].forEach(f => S.fsWrite(n, `${DB}/mainnet/v1.4.5/${f}`, '(leveldb data)', { owner: 'ubuntu', size: f.endsWith('.ldb') ? 2097152 : 16 }));
+    const jGB = (sp.disk && sp.disk.journalGB) || 1.8, nArch = Math.max(1, Math.round(jGB - 0.125));
+    for (let i = 0; i < nArch; i++) S.fsWrite(n, `${JDIR}/system@5f1c2a3b4c5d6e7f-00000000000${(1000 + i * 3711).toString(16)}-000640${(9000 + i * 97).toString(16)}aa.journal~`, '(journal)', { size: Math.round((jGB - 0.125) / nArch * GiB), age: (nArch - i) * 4 });
+    S.fsWrite(n, `${JDIR}/system.journal`, '(journal)', { size: 134217728, age: 0 });
+    n.disk.base = 0;
+    n.disk.base = sp.disk && sp.disk.base != null ? sp.disk.base : 1302 - diskUsed(n);
+    (sp.files || []).forEach(f => { S.fsWrite(n, f.path, f.c, { owner: f.owner || 'root', size: f.fill ? Math.round((n.disk.size - f.leaveGB - diskUsed(n)) * GiB) : f.size }); });
     S.fsWrite(n, '/home/ubuntu/.avalanchego/logs/main.log', (w2, h) => (h.journal.avalanchego || []).filter(e => e.level !== 'SYS').slice(-200).map(e => `[${S.fmtLogTime(new Date(w2.base + e.t * 1000))}] ${e.msg}`).join('\n') + '\n', { owner: 'ubuntu' });
     if (sp.tmpBinary) S.fsWrite(n, `/tmp/avalanchego-v${sp.tmpBinary}/avalanchego`, BIN(sp.tmpBinary), { mode: '755', owner: 'root' });
     if (sp.prevBin) S.fsWrite(n, BINP + '.prev', BIN(sp.prevBin), { mode: '755', owner: 'root' });
     n.dirs.add('/tmp'); n.dirs.add('/root'); n.dirs.add('/home/ssm-user');
+    n.disk.used = diskUsed(n);
     const exec = `${BINP} --config-file=${CFGP}`;
     n.services.avalanchego = { name: 'avalanchego', desc: 'Avalanche Node', unitPath: '/etc/systemd/system/avalanchego.service', state: 'inactive', since: -86400 * 6, pid: 1542, exec, restarts: 0, memStr: () => `${(n.mem.used / 1024 * 0.8).toFixed(1)}G`, tasks: 31 };
     n.services['avalanche-collector'] = { name: 'avalanche-collector', desc: 'Avalanche Metrics Collector', unitPath: '/etc/systemd/system/avalanche-collector.service', state: 'active', since: -86400 * 6, pid: 1610, exec: '/bin/bash /opt/avalanche-collector/collector.sh' };
@@ -149,6 +188,7 @@
       if (sp.stoppedAt !== undefined) av(n).stoppedAt = sp.stoppedAt;
       svc(n).since = sp.since ?? -86400 * 6; svc(n).pid = sp.pid || 1542;
       (n.journal.avalanchego || []).forEach(e => { e.t = svc(n).since; });
+      if (sp.restarts) svc(n).restarts = sp.restarts;
     }
     return n;
   }
@@ -162,7 +202,13 @@
     }
     Object.values(w.nodes).forEach(n => {
       const s = svc(n), a = av(n);
-      if (s.state === 'activating' && w.t >= a.nextRestart) {
+      n.disk.used = diskUsed(n);
+      n.vol.mods.forEach(m => {
+        if (m.state === 'modifying' && w.t - m.start >= 60) { m.state = 'optimizing'; n.vol.visible = m.target; }
+        if (m.state === 'optimizing' && w.t - m.start >= 2400) { m.state = 'completed'; m.end = w.t; }
+      });
+      if (s.state === 'active' && availGB(n) * GiB < MIN_FREE) lowDisk(w, n);
+      if (s.state === 'activating' && w.t >= a.nextRestart && n.powered !== false) {
         sysLog(w, n, `avalanchego.service: Scheduled restart job, restart counter is at ${s.restarts}.`);
         sysLog(w, n, 'Started avalanchego.service - Avalanche Node.');
         start(w, n);
@@ -213,6 +259,9 @@
       if (req.path === '/ext/bc/P' && req.json && req.json.method === 'platform.getCurrentValidators') {
         const ids = (req.json.params && req.json.params.nodeIDs) || null;
         const list = nodes.filter(n => av(n).validator && (!ids || ids.includes(n.nodeID))).map(n => validatorRecord(w, n, false));
+        w.chain.seen = w.chain.seen || {};
+        nodes.filter(n => !ids || ids.includes(n.nodeID)).forEach(n => { w.chain.seen[n.moniker] = true; });
+        if (list.length) S.flag(w, 'pchain_view');
         S.lesson(w, 'indep', S.LL('在线率由其他验证者记录', 'Uptime is measured by other validators'), S.LL('api.avax.network 返回的 <code>uptime</code> 和 <code>connected</code> 来自网络中的其他节点。质押期结束时，奖励按这个视角判定。', 'The <code>uptime</code> and <code>connected</code> values from api.avax.network come from other nodes on the network. Rewards are decided from this view when the staking period ends.'));
         return rpc(req.json.id, { validators: list });
       }
@@ -254,7 +303,7 @@
     return null;
   }
 
-  /* ---------- alert rules (names/thresholds from alerting/chain/avalanche.yaml) ---------- */
+  /* ---------- alert rules (names/thresholds from the production avalanche, disk and probe rules) ---------- */
   const nodesOf = w => Object.values(w.nodes);
   const rules = [
     { name: 'AvalancheNodeUnhealthy', severity: 'critical', for: 120, check: w => nodesOf(w).filter(n => !healthy(w, n)).map(n => ({ instance: n.hostname, summary: `health check failing — ${firstFailing(w, n)}` })) },
@@ -264,6 +313,9 @@
     { name: 'AvalancheRewardingStakeCritical', severity: 'critical', for: 600, check: w => nodesOf(w).filter(n => av(n).validator && uptimePct(n) < 90).map(n => ({ instance: n.hostname, summary: `P-Chain uptime ${uptimePct(n).toFixed(2)}% < 90% (below the reward threshold)` })) },
     { name: 'AvalancheBlocksBehind', severity: 'warning', for: 300, check: w => nodesOf(w).filter(n => active(n) && av(n).replay > 100).map(n => ({ instance: n.hostname, summary: `C-Chain ${Math.round(av(n).replay)} blocks behind` })) },
     { name: 'ExternalProbeFailure', severity: 'critical', for: 300, check: w => nodesOf(w).filter(n => !(active(n) && n.probeIp === n.ip && !n.sgBlocked)).map(n => ({ instance: `${n.probeIp}:9651`, summary: `validator-${n.moniker} · tcp_connect failed from us-east-1, eu-west-1, ap-southeast-1` })) },
+    { name: 'AvalancheRewardAtRiskAtPeriodEnd', severity: 'critical', for: 1800, check: w => nodesOf(w).filter(n => av(n).validator && uptimePct(n) < 92 && periodLeft(n) < 604800).map(n => ({ instance: n.hostname, summary: `${n.hostname} is under 92% with under a week left - the reward is about to be lost (uptime ${uptimePct(n).toFixed(2)}%, period ends in ${S.fmtDur(periodLeft(n))})` })) },
+    { name: 'DiskSpaceLow', severity: 'warning', for: 600, check: w => nodesOf(w).filter(n => n.powered !== false && availPct(n) < 15).map(n => ({ instance: `${n.hostname}:/`, summary: `Disk space is low on ${n.hostname}:/ (${availPct(n).toFixed(1)}% available)` })) },
+    { name: 'DiskSpaceCritical', severity: 'critical', for: 300, check: w => nodesOf(w).filter(n => n.powered !== false && availPct(n) < 5).map(n => ({ instance: `${n.hostname}:/`, summary: `Disk space is critically low on ${n.hostname}:/ (${availPct(n).toFixed(2)}% available)` })) },
     { name: 'ComponentUpgradeAvailable', severity: 'warning', for: 0, check: w => w.chain.showUpgradeAlert ? nodesOf(w).filter(n => S.semverCmp(binVer(S.fsRead(w, n, BINP)) || '0.0.0', MIN) < 0).map(n => ({ instance: `avalanche/${n.moniker}`, summary: `avalanchego ${binVer(S.fsRead(w, n, BINP))} → ${MIN} · instance=fleet-watchtower` })) : [] },
   ];
 
@@ -306,12 +358,263 @@
   nodeCommands['avalanchego.prev'] = ctx => nodeCommands.avalanchego(ctx);
   nodeCommands['avalanchego.prev'].hidden = true;
 
+  /* ---------- commands: disk and volume ---------- */
+  const positional = (args, valueFlags = []) => { const out = []; for (let i = 0; i < args.length; i++) { if (valueFlags.includes(args[i])) { i++; continue; } if (args[i].startsWith('-')) continue; out.push(args[i]); } return out; };
+  const exists = (n, p) => !!S.fsGet(n, p) || S.fsIsDir(n, p);
+  nodeCommands.df = ctx => {
+    const n = ctx.host, h = S.hasFlag(ctx.args, '-h');
+    const size = n.disk.size * GiB, used = diskUsed(n) * GiB, avail = Math.max(0, size - used);
+    const f = b => h ? human(b) : String(Math.ceil(b / 1024));
+    let rows = [[n.disk.dev, f(size), f(used), f(avail), Math.ceil(used / size * 100) + '%', '/'],
+      ['tmpfs', h ? '7.7G' : '8031012', '0', h ? '7.7G' : '8031012', '0%', '/dev/shm'],
+      ['/dev/nvme0n1p15', h ? '105M' : '106858', h ? '6.1M' : '6186', h ? '99M' : '100672', '6%', '/boot/efi']];
+    const want = positional(ctx.args);
+    if (want.length) rows = rows.filter(r => want.some(p => { const q = ctx.resolve(p); return r[5] === '/' ? !q.startsWith('/dev/shm') && !q.startsWith('/boot/efi') : q.startsWith(r[5]); }));
+    return S.table(rows, ['Filesystem', h ? 'Size' : '1K-blocks', 'Used', h ? 'Avail' : 'Available', 'Use%', 'Mounted on']) + '\n';
+  };
+  nodeCommands.du = ctx => {
+    const n = ctx.host, h = S.hasFlag(ctx.args, '-h');
+    const depth = S.opt(ctx.args, ['--max-depth', '-d']);
+    const paths = positional(ctx.args, ['-d', '--max-depth']); if (!paths.length) paths.push('.');
+    const f = b => h ? human(Math.max(4096, b)) : String(Math.ceil(Math.max(4096, b) / 1024));
+    let out = '', code = 0;
+    for (const a of paths) {
+      const p = ctx.resolve(a);
+      if (!exists(n, p)) { out += `du: cannot access '${a}': No such file or directory\n`; code = 1; continue; }
+      if (String(depth) === '1' && !S.fsGet(n, p)) S.fsList(n, p).forEach(c => { const q = S.norm(p + '/' + c); out += `${f(sizeUnder(n, q))}\t${a.replace(/\/$/, '')}/${c}\n`; });
+      out += `${f(sizeUnder(n, p))}\t${a}\n`;
+    }
+    return { code, out };
+  };
+  nodeCommands.find = ctx => {
+    const n = ctx.host, a = ctx.args;
+    const root = ctx.resolve(a[0] && !a[0].startsWith('-') ? a[0] : '.');
+    const sz = S.opt(a, ['-size']);
+    const m = sz && /^\+(\d+)([kMG])$/.exec(sz);
+    const min = m ? +m[1] * { k: 1024, M: 1048576, G: GiB }[m[2]] : 0;
+    const hits = Object.keys(n.fs).filter(k => k.startsWith(root === '/' ? '/' : root + '/') && (n.fs[k].size || 0) > min).sort();
+    const ex = a.indexOf('-exec');
+    if (ex >= 0 && a[ex + 1] === 'du') return hits.map(k => `${human(n.fs[k].size || 0)}\t${k}`).join('\n') + (hits.length ? '\n' : '');
+    if (ex >= 0 && a[ex + 1] === 'ls') return hits.map(k => `-rw-r--r-- 1 ${n.fs[k].owner || 'root'} ${n.fs[k].owner || 'root'} ${human(n.fs[k].size || 0)} Oct 14 21:47 ${k}`).join('\n') + (hits.length ? '\n' : '');
+    return hits.join('\n') + (hits.length ? '\n' : '');
+  };
+  nodeCommands.journalctl = ctx => {
+    const n = ctx.host, a = ctx.args;
+    const jfiles = () => Object.keys(n.fs).filter(k => k.startsWith(JDIR + '/'));
+    const total = () => jfiles().reduce((t, k) => t + (n.fs[k].size || 0), 0);
+    if (a.includes('--disk-usage')) return `Archived and active journals take up ${human(total())} in the file system.\n`;
+    const vi = a.findIndex(x => /^--vacuum-(size|time)/.test(x));
+    if (vi < 0) return S.commands.journalctl(ctx);
+    if (!ctx.isRoot) return { code: 1, out: `Failed to open journal directory ${JDIR}: Permission denied\n` };
+    const kind = /size/.test(a[vi]) ? 'size' : 'time';
+    const val = a[vi].includes('=') ? a[vi].split('=')[1] : a[vi + 1] || '';
+    const mm = /^(\d+)([KMGd]?)$/.exec(val);
+    if (!mm) return { code: 1, out: `Failed to parse --vacuum-${kind}= value: ${val}\n` };
+    const archived = jfiles().filter(k => k.endsWith('~')).sort((x, y) => (n.fs[y].age || 0) - (n.fs[x].age || 0));
+    let freed = 0, out = '', cur = total();
+    const limit = kind === 'size' ? +mm[1] * ({ K: 1024, M: 1048576, G: GiB }[mm[2]] || 1) : null;
+    archived.forEach(k => {
+      const fl = n.fs[k];
+      if (kind === 'size' ? cur <= limit : (fl.age || 0) < +mm[1]) return;
+      out += `Deleted archived journal ${k} (${human(fl.size)}).\n`; cur -= fl.size; freed += fl.size; S.fsRemove(n, k);
+    });
+    return out + `Vacuuming done, freed ${human(freed)} of archived journals from ${JDIR}.\n`;
+  };
+  nodeCommands.lsblk = ctx => {
+    const n = ctx.host, g = gb => { const t = gb / 1024; return t >= 1 ? t.toFixed(1).replace(/\.0$/, '') + 'T' : gb + 'G'; };
+    return `NAME         MAJ:MIN RM  SIZE RO TYPE MOUNTPOINTS\nnvme0n1      259:0    0 ${g(n.vol.visible).padStart(5)}  0 disk \n├─nvme0n1p1  259:1    0 ${g(n.vol.part).padStart(5)}  0 part /\n├─nvme0n1p14 259:2    0    4M  0 part \n└─nvme0n1p15 259:3    0  106M  0 part /boot/efi\n`;
+  };
+  const SECT = 2097152, START = 227328;
+  nodeCommands.growpart = ctx => {
+    const n = ctx.host, [dev, part] = positional(ctx.args);
+    if (!dev || !part) return { code: 2, out: 'growpart disk partition\n   rewrite partition table so that partition takes up all the space it can\n' };
+    if (!ctx.isRoot) return { code: 2, out: `FAILED: ${dev}: Permission denied\n` };
+    if (dev !== '/dev/nvme0n1') return { code: 2, out: dev === '/dev/nvme0n1p1' ? 'FAILED: /dev/nvme0n1p1: is a partition, give the disk (growpart /dev/nvme0n1 1)\n' : `FAILED: ${dev}: does not exist\n` };
+    if (String(part) !== '1') return { code: 1, out: `NOCHANGE: partition ${part} could only be grown by 0 [fudge=2048]\n` };
+    const old = n.vol.part * SECT - START;
+    if (n.vol.visible <= n.vol.part) return { code: 1, out: `NOCHANGE: partition 1 is size ${old}. it cannot be grown\n` };
+    n.vol.part = n.vol.visible;
+    const neu = n.vol.part * SECT - START;
+    return `CHANGED: partition=1 start=${START} old: size=${old} end=${old + START} new: size=${neu} end=${neu + START}\n`;
+  };
+  nodeCommands.resize2fs = ctx => {
+    const n = ctx.host, [dev] = positional(ctx.args);
+    const head = 'resize2fs 1.47.0 (5-Feb-2023)\n';
+    if (!dev) return { code: 1, out: head + 'Usage: resize2fs [-d debug_flags] [-f] [-F] [-M] [-P] [-p] device [-b|-s|new_size] [-S RAID-stride] [-z undo_file]\n' };
+    if (!['/dev/nvme0n1p1', '/dev/root'].includes(dev)) return { code: 1, out: head + `resize2fs: No such file or directory while trying to open ${dev}\nCouldn't find valid filesystem superblock.\n` };
+    if (!ctx.isRoot) return { code: 1, out: head + 'resize2fs: Permission denied to resize filesystem\n' };
+    const blocks = gb => gb * 262144;
+    if (n.vol.part <= n.disk.size) return { code: 0, out: head + `The filesystem is already ${blocks(n.disk.size)} (4k) blocks long.  Nothing to do!\n\n` };
+    const before = n.disk.size; n.disk.size = n.vol.part;
+    return head + `Filesystem at ${dev} is mounted on /; on-line resizing required\nold_desc_blocks = ${Math.ceil(blocks(before) / 32768 / 64)}, new_desc_blocks = ${Math.ceil(blocks(n.disk.size) / 32768 / 64)}\nThe filesystem on ${dev} is now ${blocks(n.disk.size)} (4k) blocks long.\n\n`;
+  };
+  nodeCommands.xfs_growfs = () => ({ code: 1, out: 'xfs_growfs: / is not a mounted XFS filesystem\n' });
+  nodeCommands.xfs_growfs.hidden = true;
+
+  /* ---------- commands: small calculators (both on nodes and on the workstation) ---------- */
+  const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MONS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const p2 = x => String(x).padStart(2, '0');
+  const dateCmd = ctx => {
+    const a = ctx.args; let d = ctx.w.now();
+    const di = a.findIndex(x => x === '-d' || x === '--date' || x.startsWith('--date=') || x.startsWith('-d@'));
+    if (di >= 0) {
+      const v = a[di].startsWith('--date=') ? a[di].slice(7) : a[di].startsWith('-d@') ? a[di].slice(2) : a[di + 1] || '';
+      if (/^@-?\d+(\.\d+)?$/.test(v)) d = new Date(parseFloat(v.slice(1)) * 1000);
+      else if (v !== 'now') return { code: 1, out: `date: invalid date '${v}'\n` };
+    }
+    const fmt = a.find(x => x.startsWith('+'));
+    const Y = d.getUTCFullYear(), M = p2(d.getUTCMonth() + 1), D = p2(d.getUTCDate()), T = `${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:${p2(d.getUTCSeconds())}`;
+    if (!fmt) return `${DAYS[d.getUTCDay()]} ${MONS[d.getUTCMonth()]} ${String(d.getUTCDate()).padStart(2)} ${T} UTC ${Y}\n`;
+    return fmt.slice(1).replace(/%([FTYmdHMSsZ])/g, (_, c) => ({ F: `${Y}-${M}-${D}`, T, Y, m: M, d: D, H: p2(d.getUTCHours()), M: p2(d.getUTCMinutes()), S: p2(d.getUTCSeconds()), s: String(Math.floor(d.getTime() / 1000)), Z: 'UTC' })[c]) + '\n';
+  };
+  /* bc: + - * / % ^ and parentheses, with bc's scale rules for * and / */
+  function bcEval(src, scale) {
+    const toks = src.match(/\d*\.?\d+|[-+*/%^()]/g) || [];
+    if (toks.join('') !== src.replace(/\s+/g, '')) throw new Error('syntax');
+    let i = 0;
+    const num = t => ({ v: parseFloat(t), s: t.includes('.') ? t.split('.')[1].length : 0 });
+    const prim = () => { const t = toks[i++]; if (t === '(') { const r = add(); if (toks[i++] !== ')') throw new Error('syntax'); return r; } if (t === '-') { const r = prim(); return { v: -r.v, s: r.s }; } if (t === undefined || !/\d/.test(t)) throw new Error('syntax'); return num(t); };
+    const pow = () => { const b = prim(); if (toks[i] === '^') { i++; const e = pow(); return { v: Math.pow(b.v, Math.trunc(e.v)), s: Math.min(b.s * Math.abs(Math.trunc(e.v)), Math.max(scale, b.s)) }; } return b; };
+    const mul = () => { let l = pow(); while (['*', '/', '%'].includes(toks[i])) { const op = toks[i++], r = pow(); if (op === '*') l = { v: l.v * r.v, s: Math.min(l.s + r.s, Math.max(scale, l.s, r.s)) }; else if (op === '/') { if (r.v === 0) throw new Error('Divide by zero'); l = { v: l.v / r.v, s: scale }; } else l = { v: l.v % r.v, s: Math.max(l.s, r.s) }; } return l; };
+    const add = () => { let l = mul(); while (toks[i] === '+' || toks[i] === '-') { const op = toks[i++], r = mul(); l = { v: op === '+' ? l.v + r.v : l.v - r.v, s: Math.max(l.s, r.s) }; } return l; };
+    const r = add(); if (i !== toks.length) throw new Error('syntax');
+    return r;
+  }
+  const bc = ctx => {
+    let scale = S.hasFlag(ctx.args, '-l') ? 20 : 0, out = '';
+    for (const st of String(ctx.stdin || '').split(/[;\n]/).map(x => x.trim()).filter(Boolean)) {
+      const m = /^scale\s*=\s*(\d+)$/.exec(st);
+      if (m) { scale = +m[1]; continue; }
+      try {
+        const r = bcEval(st, scale), f = Math.pow(10, r.s), t = Math.trunc(r.v * f + (r.v >= 0 ? 1e-9 : -1e-9)) / f;
+        out += t.toFixed(r.s).replace(/^(-?)0\./, '$1.') + '\n';
+      } catch (e) { out += e.message === 'Divide by zero' ? 'Runtime error (func=(main), adr=5): Divide by zero\n' : '(standard_in) 1: syntax error\n'; }
+    }
+    return out;
+  };
+  nodeCommands.date = dateCmd; nodeCommands.bc = bc;
+
   /* ---------- commands: laptop ---------- */
   function findNode(w, key) { return Object.values(w.nodes).find(n => n.moniker === key || n.instanceId === key || n.hostname === key); }
   function openSession(ctx, n) {
+    if (n.powered === false) return { code: 254, out: `\nAn error occurred (TargetNotConnected) when calling the StartSession operation: ${n.instanceId} is not connected.\n${C.gray(S.L('（实例当前处于 stopped 状态）', '(the instance is currently stopped)'))}\n` };
     ctx.sh.push({ host: n, user: 'ssm-user', cwd: '/home/ssm-user', env: { HOME: '/home/ssm-user', USER: 'ssm-user' } });
     return `\nStarting session with SessionId: ops-${n.id}-0a1b2c3d\n${C.gray(S.L(`已登录 ${n.hostname}（${n.region}）。sudo -i 切换到 root，exit 退出。`, `Connected to ${n.hostname} (${n.region}). sudo -i for root, exit to leave.`))}\n`;
   }
+  /* ---------- EBS: describe, modify (online), modification progress ---------- */
+  function ebs(ctx, op, f) {
+    const w = ctx.w, region = f.region || 'us-east-1';
+    const inRegion = Object.values(w.nodes).filter(n => n.region === region);
+    const volJson = n => ({ Attachments: [{ AttachTime: '2025-11-02T17:21:44+00:00', Device: '/dev/sda1', InstanceId: n.instanceId, State: 'attached', VolumeId: n.vol.id, DeleteOnTermination: true }], AvailabilityZone: region + 'a', CreateTime: '2025-11-02T17:21:40.112000+00:00', Encrypted: true, Size: n.vol.size, SnapshotId: 'snap-0c1d2e3f4a5b6c7d8', State: 'in-use', VolumeId: n.vol.id, Iops: n.vol.iops, VolumeType: n.vol.type, MultiAttachEnabled: false, Throughput: n.vol.throughput });
+    const modJson = (n, m) => Object.assign({ VolumeId: n.vol.id, ModificationState: m.state, TargetSize: m.target, TargetIops: 3000, TargetVolumeType: 'gp3', TargetThroughput: 125, TargetMultiAttachEnabled: false, OriginalSize: m.from, OriginalIops: 3000, OriginalVolumeType: 'gp3', OriginalThroughput: 125, OriginalMultiAttachEnabled: false, Progress: m.state === 'completed' ? 100 : m.state === 'modifying' ? Math.min(9, Math.floor((w.t - m.start) / 7)) : Math.min(99, 10 + Math.floor((w.t - m.start) / 26)), StartTime: S.isoTime(new Date(w.base + m.start * 1000)).replace('Z', '+00:00') }, m.end ? { EndTime: S.isoTime(new Date(w.base + m.end * 1000)).replace('Z', '+00:00') } : {});
+    const ids = String(f['volume-ids'] || f['volume-id'] || '').split(/[ ,]/).filter(Boolean);
+    const fm = /Name=attachment\.instance-id,Values=([\w-]+)/.exec(f.filters || '');
+    let vols = inRegion.filter(n => (!ids.length || ids.includes(n.vol.id)) && (!fm || fm[1] === n.instanceId));
+    if (op === 'describe-volumes') {
+      if (ids.length && !vols.length) return { code: 254, out: `\nAn error occurred (InvalidVolume.NotFound) when calling the DescribeVolumes operation: The volume '${ids[0]}' does not exist.\n` };
+      if (f.output === 'table') {
+        const rows = vols.map(n => [n.vol.id, String(n.vol.size), n.vol.type, String(n.vol.iops), String(n.vol.throughput)]);
+        const wd = [0, 1, 2, 3, 4].map(i => Math.max(...rows.map(r => r[i].length), 1) + 2);
+        const bar = '+' + wd.map(x => '-'.repeat(x + 2)).join('+') + '+';
+        const title = 'DescribeVolumes';
+        return `${'-'.repeat(bar.length)}\n|${' '.repeat(Math.floor((bar.length - 2 - title.length) / 2))}${title}${' '.repeat(Math.ceil((bar.length - 2 - title.length) / 2))}|\n${bar}\n${rows.map(r => '|' + r.map((c, i) => '  ' + c.padEnd(wd[i])).join('|') + '|').join('\n')}\n${bar}\n`;
+      }
+      return JSON.stringify({ Volumes: vols.map(volJson) }, null, 4) + '\n';
+    }
+    if (op === 'describe-volumes-modifications') {
+      if (ids.length && !vols.length) return { code: 254, out: `\nAn error occurred (InvalidVolume.NotFound) when calling the DescribeVolumesModifications operation: The volume '${ids[0]}' does not exist.\n` };
+      return JSON.stringify({ VolumesModifications: vols.flatMap(n => n.vol.mods.map(m => modJson(n, m))) }, null, 4) + '\n';
+    }
+    const vid = f['volume-id'];
+    if (!vid) return { code: 252, out: '\naws: error: the following arguments are required: --volume-id\n' };
+    const n = inRegion.find(x => x.vol.id === vid);
+    if (!n) return { code: 254, out: `\nAn error occurred (InvalidVolume.NotFound) when calling the ModifyVolume operation: The volume '${vid}' does not exist.${Object.values(w.nodes).some(x => x.vol.id === vid) ? ' ' + C.gray(S.L('（卷不在这个区域，检查 --region）', '(the volume is in another region; check --region)')) : ''}\n` };
+    const size = parseInt(f.size, 10);
+    if (!size) return { code: 254, out: '\nAn error occurred (MissingParameter) when calling the ModifyVolume operation: At least one of size, iops, throughput or volume type must be specified.\n' };
+    const last = n.vol.mods[n.vol.mods.length - 1];
+    if (last && w.t - last.start < 6 * 3600) return { code: 254, out: '\nAn error occurred (VolumeModificationRateExceeded) when calling the ModifyVolume operation: You\'ve reached the maximum modification rate per volume limit. Wait at least 6 hours between modifications per EBS volume.\n' };
+    if (size < n.vol.size) return { code: 254, out: `\nAn error occurred (InvalidParameterValue) when calling the ModifyVolume operation: New size cannot be smaller than existing size of ${n.vol.size} GiB.\n` };
+    if (size === n.vol.size) return { code: 254, out: '\nAn error occurred (InvalidParameterCombination) when calling the ModifyVolume operation: The parameter combination is not valid: the requested modification is the same as the current volume configuration.\n' };
+    if (size > 16384) return { code: 254, out: '\nAn error occurred (InvalidParameterValue) when calling the ModifyVolume operation: Volume of 16385GiB is too large for volume type gp3; maximum is 16384GiB.\n' };
+    const m = { start: w.t, from: n.vol.size, target: size, state: 'modifying' };
+    n.vol.mods.push(m); n.vol.size = size;
+    S.event(w, 'sys', S.LL(`<b>${n.moniker}</b> 的根卷 ${vid} 开始扩容：${m.from} → ${size} GiB（在线进行，不需要停机）。`, `Root volume ${vid} of <b>${n.moniker}</b> is being resized: ${m.from} → ${size} GiB (online, no downtime).`));
+    return JSON.stringify({ VolumeModification: modJson(n, m) }, null, 4) + '\n';
+  }
+
+  /* ---------- pull requests: the upgrade manifest (A1/A2) and instance changes ---------- */
+  const prList = w => w.chain.prs || (w.chain.pr ? [w.chain.pr] : []);
+  const REPO = 'example-staking/fleet';
+  async function resizeFlow(w, pr) {
+    const n = w.nodes[pr.moniker];
+    S.event(w, 'sys', S.LL(`instance-resize · <b>${n.moniker}</b>：停止 avalanchego，停止实例，改为 ${pr.to}`, `instance-resize · <b>${n.moniker}</b>: stopping avalanchego and the instance, changing it to ${pr.to}`));
+    stop(w, n); n.powered = false;
+    await S.sleep(w, pr.downMin * 60 - 90);
+    n.instanceType = pr.to; n.mem = { total: pr.memGB * 1024, used: Math.round(pr.memGB * 1024 * 0.3) }; n.powered = true; n.bootAt = w.t; n.upBase = 0;
+    sysLog(w, n, 'Started avalanchego.service - Avalanche Node.'); start(w, n);
+    S.event(w, 'sys', S.LL(`instance-resize · <b>${n.moniker}</b>：实例已在 ${pr.to} 上启动，avalanchego 正在重放区块`, `instance-resize · <b>${n.moniker}</b>: the instance is up on ${pr.to}; avalanchego is replaying blocks`));
+    for (let i = 0; i < 120 && !healthy(w, n); i++) await S.sleep(w, 30);
+    if (healthy(w, n)) S.event(w, 'ok', S.LL(`instance-resize · <b>${n.moniker}</b>：完成，节点健康`, `instance-resize · <b>${n.moniker}</b>: done, the node is healthy`));
+  }
+  async function gh(ctx) {
+    const w = ctx.w, f = ctx.flags, [g, sub, num] = f._;
+    const prs = prList(w);
+    if (g !== 'pr' || !prs.length) return { code: 1, out: `${C.gray(S.L('本练习支持：', 'Available in this lab: ') + 'gh pr list · gh pr view <n> · gh pr merge <n>' + (w.chain.prs ? ' · gh pr close <n> · gh pr edit <n> --add-label L · gh pr comment <n> --body TEXT' : ''))}\n` };
+    const deadline = () => {
+      const A = act(w); if (A === null) return '';
+      const left = A - w.t;
+      return left > 86400 ? `Network deadline: ${S.fmtClock(new Date(w.base + A * 1000))}` : left > 0 ? C.red(`⛔ DEADLINE IS TODAY — ${S.fmtDur(left)} left`) : C.red(`⛔ DEADLINE PASSED ${S.fmtDur(-left)} ago`);
+    };
+    const state = pr => pr.merged ? C.magenta('MERGED') : pr.closed ? C.red('CLOSED') : C.green('OPEN');
+    if (sub === 'list') {
+      const open = prs.filter(p => !p.merged && !p.closed);
+      if (!open.length) return `no open pull requests in ${REPO}\n`;
+      return open.map(p => `#${p.n}  ${p.title}  ${C.gray(p.branch || 'upgrade/avalanche-1.15.0')}${(p.labels || []).length ? '  ' + C.yellow(p.labels.join(', ')) : ''}  OPEN`).join('\n') + '\n';
+    }
+    const pr = prs.find(p => String(p.n) === String(num));
+    if (['view', 'merge', 'close', 'edit', 'comment'].includes(sub) && !pr) return { code: 1, out: `GraphQL: Could not resolve to a PullRequest with the number of ${num}. (repository.pullRequest)\n` };
+    const url = `https://github.com/${REPO}/pull/${pr && pr.n}`;
+    if (sub === 'view') {
+      if (pr.kind === 'resize') return `${C.bold(pr.title)}\n${REPO} #${pr.n} · ${state(pr)} · ${pr.author}${(pr.labels || []).length ? ' · labels: ' + pr.labels.join(', ') : ''}\n\n${pr.body}\n${(pr.comments || []).map(c => `\n${C.bold('ops')} commented\n  ${c}\n`).join('')}\n${C.gray(`View this pull request on GitHub: ${url}`)}\n`;
+      return `${C.bold(pr.title)}\n${REPO} #${pr.n} · ${state(pr)} · fleet-bot\n\n${deadline()}\n\n  upgrades/manifest/avalanche.yaml\n${Object.values(w.nodes).map(n => `    - moniker: ${n.moniker}\n      components:\n-       avalanchego: ${binVer(S.fsRead(w, n, BINP))}\n+       avalanchego: ${MIN}`).join('\n')}\n\n${C.gray('Merging this PR authorises upgrade-apply.yml to roll these nodes (max 2 at a time).')}\n`;
+    }
+    if (sub === 'merge') {
+      if (pr.merged) return { code: 1, out: `! Pull request #${pr.n} was already merged\n` };
+      if (pr.closed) return { code: 1, out: `X Pull request #${pr.n} is closed\n` };
+      pr.merged = true;
+      if (pr.kind === 'resize') {
+        S.event(w, 'sys', S.LL(`已合并 PR #${pr.n}。<b>instance-resize</b> 工作流开始处理 ${pr.moniker}。`, `PR #${pr.n} merged. The <b>instance-resize</b> workflow starts on ${pr.moniker}.`));
+        resizeFlow(w, pr);
+        return `${C.green('✓')} Merged pull request #${pr.n} (${pr.title})\n${C.gray(S.L('instance-resize 已触发，进度显示在右侧的事件记录中。', 'instance-resize started; progress appears in the event log on the right.'))}\n`;
+      }
+      S.event(w, 'sys', S.LL(`已合并 PR #${pr.n}。<b>upgrade-apply</b> 工作流开始滚动升级，每次最多 2 台。`, `PR #${pr.n} merged. The <b>upgrade-apply</b> workflow starts a rolling upgrade, at most 2 nodes at a time.`));
+      rollFleet(w, w.chain.primitive || 'v2');
+      return `${C.green('✓')} Merged pull request #${pr.n} (${pr.title})\n${C.gray(S.L('upgrade-apply 已触发，进度显示在右侧的事件记录中。', 'upgrade-apply started; progress appears in the event log on the right.'))}\n`;
+    }
+    if (sub === 'close') {
+      if (pr.merged) return { code: 1, out: `X Pull request #${pr.n} can't be closed because it was already merged\n` };
+      if (pr.closed) return { code: 0, out: `! Pull request #${pr.n} is already closed\n` };
+      pr.closed = true;
+      const cm = f.comment || f.c; if (typeof cm === 'string') (pr.comments = pr.comments || []).push(cm);
+      return `${C.red('✓')} Closed pull request #${pr.n} (${pr.title})\n`;
+    }
+    if (sub === 'edit') {
+      const add = f['add-label'], rm = f['remove-label'];
+      if (typeof add !== 'string' && typeof rm !== 'string') return { code: 1, out: 'nothing to edit: use --add-label or --remove-label\n' };
+      pr.labels = pr.labels || [];
+      if (typeof add === 'string') add.split(',').map(x => x.trim()).filter(Boolean).forEach(l => { if (!pr.labels.includes(l)) pr.labels.push(l); });
+      if (typeof rm === 'string') pr.labels = pr.labels.filter(l => !rm.split(',').map(x => x.trim()).includes(l));
+      return url + '\n';
+    }
+    if (sub === 'comment') {
+      const body = f.body || f.b;
+      if (typeof body !== 'string') return { code: 1, out: 'must provide --body when not running interactively\n' };
+      (pr.comments = pr.comments || []).push(body);
+      return `${url}#issuecomment-${2391000000 + Math.floor(w.rand() * 99999)}\n`;
+    }
+    return { code: 1, out: 'unknown gh pr subcommand\n' };
+  }
+
   const laptopCommands = {
     ssm: ctx => {
       const n = findNode(ctx.w, ctx.args[0]);
@@ -330,7 +633,7 @@
       }
       if (svcName === 'ec2' && op === 'describe-instances') {
         const region = f.region || 'us-east-1';
-        const rows = Object.values(ctx.w.nodes).filter(n => n.region === region).map(n => [`validator-${n.moniker}`, n.instanceId, n.ip, n.instanceType, 'running']);
+        const rows = Object.values(ctx.w.nodes).filter(n => n.region === region).map(n => [`validator-${n.moniker}`, n.instanceId, n.ip, n.instanceType, n.powered === false ? 'stopped' : 'running']);
         if (!rows.length) return `${C.gray(S.L(`（${region} 没有实例。节点所在区域：`, `(no instances in ${region}. Nodes run in: `) + [...new Set(Object.values(ctx.w.nodes).map(n => n.region))].join(', ') + S.L('）', ')'))}\n`;
         return S.table(rows, ['Name', 'InstanceId', 'PublicIpAddress', 'InstanceType', 'State']) + '\n';
       }
@@ -352,7 +655,8 @@
         return JSON.stringify({ CommandId: f['command-id'], InstanceId: r.n.instanceId, Status: r.status, StandardOutputContent: r.out, StandardErrorContent: '' }, null, 4) + '\n';
       }
       if (svcName === 'ssm' && op === 'wait') return '';
-      return { code: 2, out: `${C.gray(S.L('本练习支持：', 'Available in this lab: ') + 'aws sts get-caller-identity · aws ec2 describe-instances --region R · aws ssm start-session --region R --target ID · aws ssm send-command / get-command-invocation')}\n` };
+      if (svcName === 'ec2' && ['describe-volumes', 'modify-volume', 'describe-volumes-modifications'].includes(op)) return ebs(ctx, op, f);
+      return { code: 2, out: `${C.gray(S.L('本练习支持：', 'Available in this lab: ') + 'aws sts get-caller-identity · aws ec2 describe-instances|describe-volumes|modify-volume|describe-volumes-modifications --region R · aws ssm start-session --region R --target ID · aws ssm send-command / get-command-invocation')}\n` };
     },
     staking: async ctx => {
       const a = ctx.args.slice(); let region = 'us-east-1';
@@ -381,27 +685,8 @@
       }
       return { code: 1, out: `[     error] unsupported in simulator: ${sub}\n` };
     },
-    gh: async ctx => {
-      const [g, sub, num] = ctx.flags._;
-      const pr = ctx.w.chain.pr;
-      if (g !== 'pr' || !pr) return { code: 1, out: `${C.gray(S.L('本练习支持：', 'Available in this lab: ') + 'gh pr list · gh pr view <n> · gh pr merge <n>')}\n` };
-      const deadline = () => {
-        const A = act(ctx.w); if (A === null) return '';
-        const left = A - ctx.w.t;
-        return left > 86400 ? `Network deadline: ${S.fmtClock(new Date(ctx.w.base + A * 1000))}` : left > 0 ? C.red(`⛔ DEADLINE IS TODAY — ${S.fmtDur(left)} left`) : C.red(`⛔ DEADLINE PASSED ${S.fmtDur(-left)} ago`);
-      };
-      if (sub === 'list') return pr.merged ? 'no open pull requests in example-staking/fleet\n' : `#${pr.n}  ${pr.title}  ${C.gray('upgrade/avalanche-1.15.0')}  OPEN\n`;
-      if (sub === 'view') return `${C.bold(pr.title)}\nexample-staking/fleet #${pr.n} · ${pr.merged ? C.magenta('MERGED') : C.green('OPEN')} · fleet-bot\n\n${deadline()}\n\n  upgrades/manifest/avalanche.yaml\n${Object.values(ctx.w.nodes).map(n => `    - moniker: ${n.moniker}\n      components:\n-       avalanchego: ${binVer(S.fsRead(ctx.w, n, BINP))}\n+       avalanchego: ${MIN}`).join('\n')}\n\n${C.gray('Merging this PR authorises upgrade-apply.yml to roll these nodes (max 2 at a time).')}\n`;
-      if (sub === 'merge') {
-        if (String(num) !== String(pr.n)) return { code: 1, out: `GraphQL: Could not resolve to a PullRequest with the number of ${num}.\n` };
-        if (pr.merged) return { code: 1, out: `! Pull request #${pr.n} was already merged\n` };
-        pr.merged = true;
-        S.event(ctx.w, 'sys', S.LL(`已合并 PR #${pr.n}。<b>upgrade-apply</b> 工作流开始滚动升级，每次最多 2 台。`, `PR #${pr.n} merged. The <b>upgrade-apply</b> workflow starts a rolling upgrade, at most 2 nodes at a time.`));
-        rollFleet(ctx.w, ctx.w.chain.primitive || 'v2');
-        return `${C.green('✓')} Merged pull request #${pr.n} (${pr.title})\n${C.gray(S.L('upgrade-apply 已触发，进度显示在右侧的事件记录中。', 'upgrade-apply started; progress appears in the event log on the right.'))}\n`;
-      }
-      return { code: 1, out: 'unknown gh pr subcommand\n' };
-    },
+    gh,
+    date: dateCmd, bc,
     nc: async ctx => {
       const [ip, port] = ctx.flags._.filter(x => !x.startsWith('-'));
       if (!ip || !port) return { code: 1, out: 'usage: nc -zv <ip> <port>\n' };
@@ -443,7 +728,8 @@
       el.querySelector('.avx-grid').innerHTML = Object.values(w.nodes).map(n => {
         const s = svc(n), a = av(n);
         let st, cls;
-        if (s.state === 'activating') { st = L(`反复崩溃 ×${s.restarts}`, `crash loop ×${s.restarts}`); cls = 'bad'; }
+        if (n.powered === false) { st = L('实例已停止', 'instance stopped'); cls = 'bad'; }
+        else if (s.state === 'activating') { st = L(`反复崩溃 ×${s.restarts}`, `crash loop ×${s.restarts}`); cls = 'bad'; }
         else if (s.state !== 'active') { st = L('已停止', 'stopped'); cls = 'bad'; }
         else if (!versionOk(w, n)) { st = L('版本过低，被网络断开', 'version too old, rejected'); cls = 'bad'; }
         else if (a.replay > 0) { st = L(`重放中，剩 ${Math.round(a.replay).toLocaleString()} 块`, `replaying, ${Math.round(a.replay).toLocaleString()} blocks left`); cls = 'warn'; }
@@ -455,9 +741,10 @@
         return `<div class="avx-node ${cls}">
           <div class="an-top"><b>${n.moniker}</b><span class="an-reg">${n.region}</span><span class="pill ${cls}">${st}</span></div>
           <div class="an-row"><span>${L('运行版本', 'running')}</span><b class="mono">${a.running || '—'}</b><span>${L('磁盘上的版本', 'on disk')}</span><b class="mono">${binv || L('缺失', 'missing')}</b><span>${L('数据库', 'database')}</span><b class="mono">${a.db ? dbv(a.db) : L('空', 'empty')}</b></div>
+          <div class="an-row"><span>${L('根盘', 'root disk')}</span><b class="mono ${availPct(n) < 5 ? 'badc' : ''}">${Math.ceil(100 - availPct(n))}% · ${human(availGB(n) * GiB)} ${L('可用', 'free')}</b><span>${L('机型', 'type')}</span><b class="mono">${n.instanceType}</b></div>
           ${a.replay > 0 && s.state === 'active' ? `<div class="bar"><i style="width:${Math.max(2, 100 - a.replay / (MIGRATION_BLOCKS + 500) * 100)}%"></i></div>` : ''}
           ${a.validator ? `<div class="an-row"><span>connected</span><b class="${connected(w, n) ? 'okc' : 'badc'}">${connected(w, n) ? 'true' : 'false'}</b><span>${L('当前在线率', 'uptime now')}</span><b class="mono">${cur.toFixed(3)}%</b><span>${L('本次离线', 'offline here')}</span><b class="mono ${a.offline >= 1 ? 'badc' : ''}">${S.fmtDur(a.offline)}</b></div>
-          <div class="ubar"><i style="width:${pos(proj)}%" class="${proj < 90 ? 'b' : proj < 95 ? 'w' : ''}"></i><em style="left:${pos(90)}%"></em><span>${L('期末', 'end of period')} ${proj.toFixed(3)}%</span></div>` : `<div class="an-row"><span>${L('不在验证者集合中', 'not in the validator set')}</span></div>`}
+          <div class="ubar"><i style="width:${pos(proj)}%" class="${proj < 90 ? 'b' : proj < 95 ? 'w' : ''}"></i><em style="left:${pos(90)}%"></em><span>${L('期末', 'end of period')} ${proj.toFixed(3)}% · ${L('剩余', 'ends in')} ${S.fmtDur(periodLeft(n))}</span></div>` : `<div class="an-row"><span>${L('不在验证者集合中', 'not in the validator set')}</span></div>`}
         </div>`;
       }).join('');
     },
@@ -484,7 +771,10 @@
       if (!h.av) return;
       if (p === DB || p.startsWith(DB + '/') || p === '/home/ubuntu/.avalanchego') { if (!Object.keys(h.fs).some(k => k.startsWith(DB + '/'))) { h.av.db = null; S.flag(w, 'wipe_db'); } }
       if (p === STAKING || p.startsWith(STAKING) || p === '/home/ubuntu/.avalanchego') S.flag(w, 'lost_identity');
+      if (p.startsWith(DB + '/') && Object.keys(h.fs).some(k => k.startsWith(DB + '/'))) {
+        S.flag(w, 'db_files');
+      }
     },
-    helpers: { healthy, connected, versionOk, ipOk, uptimePct, projected, binVer, BIN, MIN, active },
+    helpers: { healthy, connected, versionOk, ipOk, uptimePct, projected, binVer, BIN, MIN, active, availPct, diskUsed, periodLeft },
   });
 })(SIM);

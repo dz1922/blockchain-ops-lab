@@ -5,8 +5,8 @@
      two web UIs and nginx; health checks, depends_on ordering, restart vs recreate,
      a named postgres volume that outlives its containers
    - mining rounds (about 10 minutes); the validator records liveness activity once per round
-   - sync lag: the participant's cursor vs wall clock (cc-indexer /status), and the round
-     the validator last recorded vs the round the SV scans report (cc-explorer /api/sync)
+   - sync lag: the participant's cursor vs wall clock (ledger-indexer /status), and the round
+     the validator last recorded vs the round the SV scans report (scan-proxy /api/sync)
    - traffic: purchased extra traffic (bytes) that every submission consumes; automated
      top-ups and manual purchases paid in CC from the validator wallet
    - Splice versions: the MainNet-ready release is the one 2/3 of SV scans report; once the SVs
@@ -56,8 +56,8 @@
   ];
   const WAITS = { participant: 'postgres-splice', validator: 'participant' };   // depends_on: condition: service_healthy
   const AUX = [
-    { svc: 'cc-indexer', name: 'cc-indexer', image: 'cc-indexer:2.3.1', cmd: '"python -m indexer"', ports: '127.0.0.1:8090->8090/tcp', boot: 5, gb: 0.31 },
-    { svc: 'cc-explorer', name: 'cc-explorer', image: 'cc-explorer:1.9.0', cmd: '"node server.js"', ports: '127.0.0.1:8100->8100/tcp', boot: 5, gb: 0.28 },
+    { svc: 'ledger-indexer', name: 'ledger-indexer', image: 'ledger-indexer:2.3.1', cmd: '"python -m indexer"', ports: '127.0.0.1:8090->8090/tcp', boot: 5, gb: 0.31 },
+    { svc: 'scan-proxy', name: 'scan-proxy', image: 'scan-proxy:1.9.0', cmd: '"node server.js"', ports: '127.0.0.1:8100->8100/tcp', boot: 5, gb: 0.28 },
   ];
   const specOf = svc => SPECS.find(s => s.svc === svc);
 
@@ -107,7 +107,7 @@
     Object.entries(OS).forEach(([k, v]) => out.push({ p: k, gb: cn.osGB * v / tot }));
     out.push({ p: '/var/lib/docker/overlay2', gb: p.imgs });
     out.push({ p: '/var/lib/docker/image', gb: 0.02 });
-    out.push({ p: '/var/lib/docker/volumes/cc-indexer_data/_data', gb: cn.auxGB });
+    out.push({ p: '/var/lib/docker/volumes/ledger-indexer_data/_data', gb: cn.auxGB });
     if (cn.vol && cn.vol.gb > 0) {
       out.push({ p: VOLP + '/_data/base', gb: Math.max(0.01, cn.vol.gb - 1.1) });
       out.push({ p: VOLP + '/_data/pg_wal', gb: Math.min(1, cn.vol.gb * 0.4) });
@@ -481,7 +481,7 @@
     return J(404, { error: 'The requested resource could not be found.' });
   }
   function collectorMetrics(w, n) {
-    const cn = n.cn, src = upMetric(n, 'cc-explorer'), idx = upMetric(n, 'cc-indexer');
+    const cn = n.cn, src = upMetric(n, 'scan-proxy'), idx = upMetric(n, 'ledger-indexer');
     const lines = [
       ['canton_collector_scrape_timestamp_seconds', Math.floor((w.base / 1000) + w.t)],
       ['canton_containers_total', dockerUp(n) ? ctrList(n).filter(running).length : 0],
@@ -535,14 +535,14 @@
       const port = String(req.port || '80');
       const auxUp = name => dockerUp(n) && running(cn.ctrs[name]);
       if (port === '8100') {
-        if (!auxUp('cc-explorer')) return refused(h, port);
+        if (!auxUp('scan-proxy')) return refused(h, port);
         if (req.path !== '/api/sync') return J(404, { error: 'not found' });
         const b = behind(w, n);
         if (!synced(w, n) && Object.values(cn.ctrs).filter(r => r.project === PROJECT).every(healthy)) S.lesson(w, 'healthybehind', LL('容器健康不等于节点同步', 'Healthy containers are not a synced node'), LL('docker 的健康检查只回答"进程是否在响应"。participant 可能在正常响应的同时停在几天前的位置。判断节点是否跟上，要比较 SV scan 报告的当前轮次和本验证者最后记录活动的轮次（/api/sync），以及 participant 处理事件的时间落后墙上时钟多少（/status 的 cursor_lag_seconds）。', 'A docker health check only answers whether the process responds. A participant can respond normally while sitting days behind. To know whether the node keeps up, compare the round the SV scans report with the round this validator last recorded (/api/sync), and how far the participant\'s processed events trail wall-clock time (cursor_lag_seconds in /status).'));
         return J(200, { network_round: netRound(w), our_round: cn.ourRound, rounds_behind: b, synced: synced(w, n), network_round_source: 'sv scan (round-of-latest-data)', party_id: cn.party });
       }
       if (port === '8090') {
-        if (!auxUp('cc-indexer')) return refused(h, port);
+        if (!auxUp('ledger-indexer')) return refused(h, port);
         if (req.path !== '/status') return J(404, { error: 'not found' });
         return J(200, { cursor_lag_seconds: +cn.lag.toFixed(1), max_seq: Math.floor(cn.seq0 + (w.t - cn.lag) * 3.2), latest_record_time: iso(w, w.t - cn.lag), participant: 'participant:5001' });
       }
@@ -571,13 +571,13 @@
     { name: 'CantonValidatorDown', severity: 'critical', for: 300, check: w => nodesOf(w).filter(n => coll(n) && !upMetric(n, 'validator')).map(n => ({ instance: n.hostname, summary: `Canton validator app down on ${n.hostname}` })) },
     { name: 'CantonCollectorDown', severity: 'warning', for: 300, check: w => nodesOf(w).filter(n => flow(n) && n.services['canton-collector'].state !== 'active').map(n => ({ instance: n.hostname, summary: `Canton metrics collector failing on ${n.hostname}` })) },
     { name: 'CantonAgentHeartbeatMissing', severity: 'critical', for: 0, check: w => nodesOf(w).filter(n => ['grafana-agent', 'node_exporter'].some(k => (n.services[k].downFor || 0) >= 600)).map(n => ({ instance: n.hostname, summary: `Canton monitoring agent lost on ${n.hostname}` })) },
-    { name: 'CantonBehindChainTip', severity: 'warning', for: 300, check: w => nodesOf(w).filter(n => coll(n) && upMetric(n, 'cc-explorer') && behind(w, n) >= 100).map(n => ({ instance: n.hostname, summary: `Canton validator is ${behind(w, n)} rounds behind chain tip on ${n.hostname}` })) },
-    { name: 'CantonSeverelyBehindChainTip', severity: 'critical', for: 120, check: w => nodesOf(w).filter(n => coll(n) && upMetric(n, 'cc-explorer') && behind(w, n) >= 1000).map(n => ({ instance: n.hostname, summary: `Canton validator severely behind chain tip (${behind(w, n)} rounds) on ${n.hostname}` })) },
-    { name: 'CantonSyncStalled', severity: 'warning', for: 300, check: w => nodesOf(w).filter(n => coll(n) && upMetric(n, 'cc-indexer') && n.cn.lag > 900).map(n => ({ instance: n.hostname, summary: `Canton chain-tip lag ${Math.round(n.cn.lag)}s on ${n.hostname}` })) },
+    { name: 'CantonBehindChainTip', severity: 'warning', for: 300, check: w => nodesOf(w).filter(n => coll(n) && upMetric(n, 'scan-proxy') && behind(w, n) >= 100).map(n => ({ instance: n.hostname, summary: `Canton validator is ${behind(w, n)} rounds behind chain tip on ${n.hostname}` })) },
+    { name: 'CantonSeverelyBehindChainTip', severity: 'critical', for: 120, check: w => nodesOf(w).filter(n => coll(n) && upMetric(n, 'scan-proxy') && behind(w, n) >= 1000).map(n => ({ instance: n.hostname, summary: `Canton validator severely behind chain tip (${behind(w, n)} rounds) on ${n.hostname}` })) },
+    { name: 'CantonSyncStalled', severity: 'warning', for: 300, check: w => nodesOf(w).filter(n => coll(n) && upMetric(n, 'ledger-indexer') && n.cn.lag > 900).map(n => ({ instance: n.hostname, summary: `Canton chain-tip lag ${Math.round(n.cn.lag)}s on ${n.hostname}` })) },
     { name: 'CantonSpliceVersionDrift', severity: 'warning', for: 0, check: w => nodesOf(w).filter(n => flow(n) && n.cn.watch.needed === 1).map(n => ({ instance: n.hostname, summary: `Canton validator running outdated Splice: ${n.hostname} (${n.cn.watch.local} -> ${n.cn.watch.quorum})` })) },
     { name: 'CantonSpliceVersionWatcherStale', severity: 'warning', for: 300, check: w => nodesOf(w).filter(n => flow(n) && w.t - n.cn.watch.last > 3600).map(n => ({ instance: n.hostname, summary: `Splice version watcher stale on ${n.hostname}` })) },
     { name: 'CantonSpliceVersionWatcherUnhealthy', severity: 'warning', for: 5400, check: w => nodesOf(w).filter(n => flow(n) && n.cn.watch.health === 0).map(n => ({ instance: n.hostname, summary: `Splice version watcher unhealthy on ${n.hostname}` })) },
-    { name: 'CantonChainDataSourceDown', severity: 'warning', for: 600, check: w => nodesOf(w).filter(n => coll(n) && !upMetric(n, 'cc-explorer')).map(n => ({ instance: n.hostname, summary: `Canton sync-lag source unavailable on ${n.hostname}` })) },
+    { name: 'CantonChainDataSourceDown', severity: 'warning', for: 600, check: w => nodesOf(w).filter(n => coll(n) && !upMetric(n, 'scan-proxy')).map(n => ({ instance: n.hostname, summary: `Canton sync-lag source unavailable on ${n.hostname}` })) },
   ];
 
   /* ---------- docker CLI ---------- */
@@ -634,7 +634,7 @@
       Image: 'sha256:' + hex(hstr(r.image), 64),
       LogPath: logPath(r.id), Name: '/' + r.name, RestartCount: r.restarts,
       HostConfig: { LogConfig: { Type: 'json-file', Config: r.logOpts }, RestartPolicy: { Name: 'always', MaximumRetryCount: 0 } },
-      Mounts: r.svc === 'postgres-splice' ? [{ Type: 'volume', Name: VOL, Source: VOLP + '/_data', Destination: '/var/lib/postgresql/data', Driver: 'local', Mode: 'z', RW: true }] : r.svc === 'cc-indexer' ? [{ Type: 'volume', Name: 'cc-indexer_data', Source: '/var/lib/docker/volumes/cc-indexer_data/_data', Destination: '/data', Driver: 'local', Mode: 'z', RW: true }] : [],
+      Mounts: r.svc === 'postgres-splice' ? [{ Type: 'volume', Name: VOL, Source: VOLP + '/_data', Destination: '/var/lib/postgresql/data', Driver: 'local', Mode: 'z', RW: true }] : r.svc === 'ledger-indexer' ? [{ Type: 'volume', Name: 'ledger-indexer_data', Source: '/var/lib/docker/volumes/ledger-indexer_data/_data', Destination: '/data', Driver: 'local', Mode: 'z', RW: true }] : [],
       Config: { Hostname: r.id.slice(0, 12), Image: r.image, Env: envList(w, n, r), Labels: { 'com.docker.compose.project': r.project, 'com.docker.compose.service': r.svc, 'com.docker.compose.project.working_dir': r.project === PROJECT ? DIR : `/opt/${r.svc}` } },
     };
     if (r.health && r.state === 'running') o.State.Health = healthObj(w, n, r);
@@ -819,7 +819,7 @@
   }
   function dVolume(ctx, args) {
     const w = ctx.w, n = ctx.host, sub = args[0], rest = args.slice(1);
-    const vols = () => (n.cn.vol ? [VOL] : []).concat(['cc-indexer_data']);
+    const vols = () => (n.cn.vol ? [VOL] : []).concat(['ledger-indexer_data']);
     if (sub === 'ls') return S.table(vols().map(v => ['local', v]), ['DRIVER', 'VOLUME NAME']) + '\n';
     if (sub === 'inspect') return dInspect(ctx, rest);
     if (sub === 'rm') {
@@ -830,7 +830,7 @@
           const users = volumeInUse(n);
           if (users.length) { out += `Error response from daemon: remove ${VOL}: volume is in use - [${users.map(r => r.id).join(', ')}]\n`; code = 1; return; }
           wipeVolume(w, n); out += x + '\n';
-        } else if (x === 'cc-indexer_data') { out += `Error response from daemon: remove cc-indexer_data: volume is in use - [${n.cn.ctrs['cc-indexer'] ? n.cn.ctrs['cc-indexer'].id : ''}]\n`; code = 1; }
+        } else if (x === 'ledger-indexer_data') { out += `Error response from daemon: remove ledger-indexer_data: volume is in use - [${n.cn.ctrs['ledger-indexer'] ? n.cn.ctrs['ledger-indexer'].id : ''}]\n`; code = 1; }
         else { out += `Error response from daemon: get ${x}: no such volume\n`; code = 1; }
       });
       return { code, out };
@@ -1295,10 +1295,10 @@ MIN_TOPUP_INTERVAL=1m
     S.fsWrite(n, VOLP + '/_data/global/pg_control', '(binary)', { mode: '600', owner: 'root', size: 8192 });
     S.fsWrite(n, VOLP + '/_data/base/16384/41877', '(relation data)', { mode: '600', owner: 'root', size: 1073741824 });
     S.fsWrite(n, VOLP + '/_data/pg_wal/00000001000000A2000000C7', '(wal segment)', { mode: '600', owner: 'root', size: 16777216 });
-    S.fsWrite(n, '/var/lib/docker/volumes/cc-indexer_data/_data/indexer.db', '(sqlite)', { owner: 'root', size: 3328599654 });
+    S.fsWrite(n, '/var/lib/docker/volumes/ledger-indexer_data/_data/indexer.db', '(sqlite)', { owner: 'root', size: 3328599654 });
     ['/var/lib/docker/overlay2', '/var/lib/docker/image', '/var/lib/docker/network', '/var/lib/docker/buildkit', '/usr', '/snap', '/boot', '/var/cache', '/var/log', '/var/lib/apt', '/var/lib/snapd', '/home/ubuntu', '/home/ssm-user', '/tmp', '/root', '/etc'].forEach(d => n.dirs.add(d));
     S.fsWrite(n, '/dev/null', '');
-    S.fsWrite(n, '/opt/canton-collector/collector.sh', '#!/bin/bash\n# Canton metrics collector: container health from docker inspect, chain-tip sync from\n# http://127.0.0.1:8100/api/sync (cc-explorer) and http://127.0.0.1:8090/status (cc-indexer).\n# Serves Prometheus text on :9101 for grafana-agent.\n', { mode: '755' });
+    S.fsWrite(n, '/opt/canton-collector/collector.sh', '#!/bin/bash\n# Canton metrics collector: container health from docker inspect, chain-tip sync from\n# http://127.0.0.1:8100/api/sync (scan-proxy) and http://127.0.0.1:8090/status (ledger-indexer).\n# Serves Prometheus text on :9101 for grafana-agent.\n', { mode: '755' });
     S.fsWrite(n, '/etc/systemd/system/canton-collector.service', '[Unit]\nDescription=Canton Metrics Collector\nAfter=network-online.target docker.service\n\n[Service]\nEnvironment="LISTEN_PORT=9101"\nEnvironment="SYNC_URL=http://127.0.0.1:8100/api/sync"\nEnvironment="STATUS_URL=http://127.0.0.1:8090/status"\nExecStart=/opt/canton-collector/collector.sh\nRestart=always\n\n[Install]\nWantedBy=multi-user.target\n');
     S.fsWrite(n, '/etc/systemd/system/splice-version-watcher.service', '[Unit]\nDescription=Splice version watcher\n\n[Service]\nType=oneshot\nExecStart=/usr/local/bin/splice-version-watcher.sh\n');
     S.fsWrite(n, '/etc/systemd/system/splice-version-watcher.timer', '[Unit]\nDescription=Run the Splice version watcher every 15 minutes\n\n[Timer]\nOnCalendar=*:0/15\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n');
@@ -1367,8 +1367,8 @@ MIN_TOPUP_INTERVAL=1m
       };
       w.nodes['canton-01'] = makeNode(w, cfg);
       S.fsWrite(w.laptop, '/home/ops/NOTES.md', S.L(
-        `# canton-01（Splice 验证者，MainNet）\n- 登录：ssm canton-01，然后 sudo -i\n- compose 目录：${DIR}\n- 验证者 party：用 wallet API 的 /v0/validator-user 查询\n- participant：${PARTICIPANT}\n- synchronizer：${DOMAIN}\n- 上线担保 SV：sv-3，party ${SPONSOR}\n- 合作方验证者（上月用本钱包代付过 traffic）：${PARTNER}\n- wallet API：节点上的 http://wallet.localhost/api/validator，token 在 /root/operator.jwt\n- 同步状态：curl -s 127.0.0.1:8100/api/sync（cc-explorer）· curl -s 127.0.0.1:8090/status（cc-indexer）\n- 版本监视：/var/log/splice-version-watcher.log\n`,
-        `# canton-01 (Splice validator, MainNet)\n- log in: ssm canton-01, then sudo -i\n- compose directory: ${DIR}\n- validator party: ask the wallet API, /v0/validator-user\n- participant: ${PARTICIPANT}\n- synchronizer: ${DOMAIN}\n- onboarding sponsor SV: sv-3, party ${SPONSOR}\n- partner validator (this wallet paid its traffic last month): ${PARTNER}\n- wallet API: http://wallet.localhost/api/validator on the node; token in /root/operator.jwt\n- sync status: curl -s 127.0.0.1:8100/api/sync (cc-explorer) · curl -s 127.0.0.1:8090/status (cc-indexer)\n- version watcher: /var/log/splice-version-watcher.log\n`));
+        `# canton-01（Splice 验证者，MainNet）\n- 登录：ssm canton-01，然后 sudo -i\n- compose 目录：${DIR}\n- 验证者 party：用 wallet API 的 /v0/validator-user 查询\n- participant：${PARTICIPANT}\n- synchronizer：${DOMAIN}\n- 上线担保 SV：sv-3，party ${SPONSOR}\n- 合作方验证者（上月用本钱包代付过 traffic）：${PARTNER}\n- wallet API：节点上的 http://wallet.localhost/api/validator，token 在 /root/operator.jwt\n- 同步状态：curl -s 127.0.0.1:8100/api/sync（scan-proxy）· curl -s 127.0.0.1:8090/status（ledger-indexer）\n- 版本监视：/var/log/splice-version-watcher.log\n`,
+        `# canton-01 (Splice validator, MainNet)\n- log in: ssm canton-01, then sudo -i\n- compose directory: ${DIR}\n- validator party: ask the wallet API, /v0/validator-user\n- participant: ${PARTICIPANT}\n- synchronizer: ${DOMAIN}\n- onboarding sponsor SV: sv-3, party ${SPONSOR}\n- partner validator (this wallet paid its traffic last month): ${PARTNER}\n- wallet API: http://wallet.localhost/api/validator on the node; token in /root/operator.jwt\n- sync status: curl -s 127.0.0.1:8100/api/sync (scan-proxy) · curl -s 127.0.0.1:8090/status (ledger-indexer)\n- version watcher: /var/log/splice-version-watcher.log\n`));
     },
     tick, http, rules, nodeCommands, laptopCommands, panel,
     serviceAction(w, h, s, action) {

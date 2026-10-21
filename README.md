@@ -81,6 +81,7 @@ node test/shots.js         # desktop + mobile screenshots to /tmp/vsim-*.png
 | `score(w)` | Returns `[[label, value, 'good'\|'mid'\|'bad']]`. |
 | `debrief` | HTML. |
 | `laptopCommands`, `extraRules` | Optional. |
+| `tick(w, dt)` | Optional. Runs after the network's own tick; use it for lab-specific checks, such as raising a trap flag when a threshold is crossed. |
 
 ## Adding a network
 

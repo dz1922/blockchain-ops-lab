@@ -31,6 +31,24 @@
     return out;
   };
 
+  /* ---------- node fallbacks: used on a node only when the network defines nothing ---------- */
+  // The aws CLI is installed on cloud nodes, but the instance role is deliberately narrow:
+  // EC2 and EBS changes are made from the workstation with the operator's own role.
+  S.nodeFallback = {
+    aws: ctx => {
+      const h = ctx.host, role = `${h.moniker || h.id}-instance-role`, inst = h.instanceId || 'i-0000000000example';
+      const p = positional(ctx.args, ['--region', '--output', '--filters', '--query', '--volume-id', '--size', '--instance-id', '--instance-ids', '--profile']);
+      if (!p.length) return { code: 252, out: 'usage: aws [options] <command> <subcommand> [<subcommand> ...] [parameters]\naws: error: the following arguments are required: command\n' };
+      if (p[0] === 'sts' && p[1] === 'get-caller-identity') return JSON.stringify({ UserId: `AROAEXAMPLEINSTANCE:${inst}`, Account: '111122223333', Arn: `arn:aws:sts::111122223333:assumed-role/${role}/${inst}` }, null, 4) + '\n';
+      const op = (p[1] || '').split('-').map(x => x.charAt(0).toUpperCase() + x.slice(1)).join('');
+      const svc = p[0];
+      const msg = svc === 's3'
+        ? `An error occurred (AccessDenied) when calling the ${p[1] === 'ls' ? 'ListObjectsV2' : 'PutObject'} operation: Access Denied`
+        : `An error occurred (UnauthorizedOperation) when calling the ${op} operation: You are not authorized to perform this operation. User: arn:aws:sts::111122223333:assumed-role/${role}/${inst} is not authorized to perform: ${svc}:${op} because no identity-based policy allows the ${svc}:${op} action`;
+      return { code: 254, out: `\n${msg}\n${C.gray(S.L('（节点上的实例角色只有最小权限。EC2、EBS 这类操作用你自己的角色在工作电脑上执行：exit 回到工作电脑）', '(the instance role on a node is deliberately narrow. Run EC2 and EBS operations from your workstation with your own role: type exit to go back)'))}\n` };
+    },
+  };
+
   /* ---------- meta ---------- */
   K.help = ctx => {
     const h = ctx.host, w = ctx.w;

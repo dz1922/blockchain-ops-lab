@@ -213,7 +213,7 @@
       }
       const pools = h.kind === 'laptop'
         ? [net.laptopCommands, this.w.scn.laptopCommands, S.commands]
-        : [h.commands, net.nodeCommands, S.commands];
+        : [h.commands, net.nodeCommands, S.commands, S.nodeFallback];
       for (const pool of pools) if (pool && pool[base]) return { fn: pool[base], base };
       return null;
     }
@@ -221,9 +221,15 @@
       const found = this.lookup(name);
       if (found && found.missing) { write(found.missing + '\n'); return { code: 127 }; }
       if (!found) {
-        const hint = this.sess.host.kind === 'laptop'
-          ? S.L('（你在工作电脑上。节点上的命令需要先登录节点）', '(you are on your workstation; node commands need a session on the node)')
-          : S.L('（这个命令不在练习范围内，help 列出可用命令）', '(not available in this lab; help lists the commands)');
+        // say where the command does exist, if it exists on the other side
+        const base = name.includes('/') ? name.slice(name.lastIndexOf('/') + 1) : name, net = this.w.net, onLaptop = this.sess.host.kind === 'laptop';
+        const onWorkstation = [net.laptopCommands, this.w.scn.laptopCommands].some(p => p && p[base]);
+        const onNode = [net.nodeCommands].concat(Object.values(this.w.nodes).map(n => n.commands)).some(p => p && p[base]);
+        const hint = onLaptop
+          ? (onNode ? S.L(`（${base} 在节点上运行：先用 ssm <节点名> 登录节点）`, `(${base} runs on a node: log in with ssm <node> first)`)
+            : S.L('（你在工作电脑上。节点上的命令需要先登录节点）', '(you are on your workstation; node commands need a session on the node)'))
+          : (onWorkstation ? S.L(`（${base} 在你的工作电脑上：exit 回到工作电脑再运行）`, `(${base} is on your workstation: type exit to go back to it)`)
+            : S.L('（这个命令不在练习范围内，help 列出可用命令）', '(not available in this lab; help lists the commands)'));
         write(`bash: ${name}: command not found ${S.C.gray(hint)}\n`);
         return { code: 127 };
       }

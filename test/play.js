@@ -10,6 +10,17 @@ const dir = path.join(__dirname, 'labs');
 const nets = fs.readdirSync(dir).filter(f => f.endsWith('.js')).map(f => f.slice(0, -3)).filter(n => !process.env.ONLY || process.env.ONLY.split(',').includes(n)).sort();
 (async () => {
   const browser = await chromium.launch(LAUNCH);
+  // English is the default even for a Chinese browser with no saved choice.
+  {
+    const ctx = await browser.newContext({ locale: 'zh-CN' });
+    const p0 = await ctx.newPage();
+    await p0.goto('file://' + path.resolve(__dirname, '../dist/index.html'));
+    await p0.waitForTimeout(200);
+    const r0 = await p0.evaluate(`({ lang: VSIM.S.lang, first: document.querySelector('#lang-home button').textContent, html: document.documentElement.lang })`);
+    await ctx.close();
+    if (r0.lang !== 'en' || r0.first !== 'EN' || r0.html !== 'en') { console.error('FAILED: default language is not English first', r0); process.exit(1); }
+    console.log('default language: English ok');
+  }
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const errs = [];
   page.on('pageerror', e => errs.push(e.message));

@@ -39,15 +39,20 @@ button{padding:.75rem;border:0;border-radius:10px;background:#b6f23a;color:#0b0f
 .err{color:#ff6b57;font-size:.88rem}
 </style></head><body>
 <form method="post" action="/__auth">
-<span class="k">Validator Operations Lab · 验证者运维实验室</span>
-<h1>Enter the access password</h1>
-<p>This course is shared by invitation. 请输入访问密码。</p>
-${failed ? '<p class="err">Incorrect password. 密码错误。</p>' : ''}
-<input type="password" name="password" autocomplete="current-password" placeholder="Password · 密码" autofocus required>
+<span class="k">Validator Operations Lab</span>
+<h1 data-zh="请输入访问密码">Enter the access password</h1>
+<p data-zh="这门课程仅限受邀访问。">This course is shared by invitation.</p>
+${failed ? '<p class="err" data-zh="密码错误。">Incorrect password.</p>' : ''}
+<input type="password" name="password" autocomplete="current-password" placeholder="Password" data-zh-ph="密码" autofocus required>
 <input type="hidden" name="next" value="${esc(next)}">
-<button type="submit">Continue · 进入</button>
+<button type="submit" data-zh="进入">Continue</button>
 </form>
-<script>document.querySelector('form').addEventListener('submit',function(){this.next.value+=location.hash})</script>
+<script>
+document.querySelector('form').addEventListener('submit',function(){this.next.value+=location.hash});
+// English by default; Chinese only when the visitor chose it before (?lang=zh or the saved choice)
+var zh=/[?&]lang=zh/.test(location.search)||(function(){try{return localStorage.getItem('vsim.lang')==='zh'}catch(e){return false}})();
+if(zh){document.documentElement.lang='zh-CN';document.querySelectorAll('[data-zh]').forEach(function(e){e.textContent=e.getAttribute('data-zh')});document.querySelectorAll('[data-zh-ph]').forEach(function(e){e.placeholder=e.getAttribute('data-zh-ph')});}
+</script>
 </body></html>`;
   return new Response(html, {
     status: 401,

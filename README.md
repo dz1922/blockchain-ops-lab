@@ -6,7 +6,9 @@ The course is public-facing. All hosts, IPs, instance IDs, accounts and identiti
 
 ## Languages
 
-The UI and all teaching text are bilingual (zh / en). Real tool output in the terminal stays in English, as it is in production.
+English is the primary language: the site opens in English, and new content is written in English first. Chinese is supported as a full translation; every teaching string has both. Real tool output in the terminal stays in English, as it is in production.
+
+The helpers take `(zh, en)` in that order for historical reasons.
 
 | Helper | Use |
 |---|---|

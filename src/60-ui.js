@@ -156,7 +156,7 @@
     else renderHome(homeNet);
   }
   function langSwitch(el) {
-    el.innerHTML = `<button data-l="zh" class="${S.lang === 'zh' ? 'on' : ''}">中文</button><button data-l="en" class="${S.lang === 'en' ? 'on' : ''}">EN</button>`;
+    el.innerHTML = `<button data-l="en" class="${S.lang === 'en' ? 'on' : ''}">EN</button><button data-l="zh" class="${S.lang === 'zh' ? 'on' : ''}">中文</button>`;
     el.querySelectorAll('button').forEach(b => b.addEventListener('click', () => setLang(b.dataset.l)));
   }
   function renderChrome() {

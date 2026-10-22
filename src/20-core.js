@@ -23,7 +23,7 @@ const SIM = (function () {
      S.L(zh, en)  → string in the current language (terminal output, written once)
      S.LL(zh, en) → bilingual value kept for later rendering (events, lessons, scenario text)
      S.tr(x)      → resolve a bilingual value                                              */
-  S.lang = 'zh';
+  S.lang = 'en';                // English is the primary language; Chinese is a full translation
   S.L = (zh, en) => (S.lang === 'en' ? en : zh);
   S.LL = (zh, en) => ({ zh, en });
   S.tr = x => (x && typeof x === 'object' && 'zh' in x ? x[S.lang] : x);

@@ -26,6 +26,15 @@
       en: ['Interactive explanations and short quizzes; no terminal needed', 'Build a validator from scratch in the simulator, with guidance at every step', 'The alert has fired: investigate, fix, and avoid the moves that cause damage'],
     },
     stepWord: { zh: '第 {n} 步', en: 'Step {n}' },
+    netsTitle: { zh: '选择一个网络', en: 'Choose a network' },
+    netsSub: { zh: '每个网络都按三步走：基础知识、运行验证者、生产问题挑战。', en: 'Every network follows the same three steps: fundamentals, running a validator, and production challenges.' },
+    allNets: { zh: '← 全部网络', en: '← All networks' },
+    open: { zh: '进入 →', en: 'Open →' },
+    notStarted: { zh: '未开始', en: 'not started' },
+    doneWord: { zh: '已完成', en: 'done' },
+    nChapters: { zh: '{d}/{n} 章', en: '{d}/{n} chapters' },
+    nLabs: { zh: '{d}/{n} 个练习', en: '{d}/{n} labs' },
+    netMeta: { zh: '{c} 章基础 · {r} 个引导练习 · {o} 个挑战', en: '{c} chapters · {r} guided lab · {o} challenges' },
     soon: { zh: '这一部分正在编写。', en: 'This part is being written.' },
     chapters: { zh: '{n} 章', en: '{n} chapters' },
     chapterOf: { zh: '第 {i} / {n} 章', en: 'Chapter {i} of {n}' },
@@ -38,9 +47,9 @@
     prev: { zh: '← 上一章', en: '← Previous' },
     next: { zh: '下一章 →', en: 'Next →' },
     toRun: { zh: '下一步：运行验证者 →', en: 'Next: run a validator →' },
-    toHome: { zh: '返回课程首页', en: 'Back to the course' },
+    toHome: { zh: '返回这个网络', en: 'Back to this network' },
     lessonDone: { zh: '本节基础知识已全部完成。', en: 'You have finished the fundamentals for this network.' },
-    allCourses: { zh: '← 全部课程', en: '← All courses' },
+    allCourses: { zh: '← 返回', en: '← Back' },
     stepsTitle: { zh: '步骤', en: 'Steps' },
     rRunDone: { zh: '全部步骤完成', en: 'All steps complete' },
     runDoneNext: { zh: '下一步：生产问题挑战', en: 'Next: production challenges' },
@@ -69,7 +78,7 @@
       en: 'Each network is a self-contained module that describes its mechanics, nodes, commands, APIs and alert rules. Each lab is plain data: a starting state, faults, goals, hints and a review. Adding a network or a lab does not require changes anywhere else.',
     },
     foot: { zh: '练习中的主机、地址和身份均为虚构。', en: 'All hosts, addresses and identities in these labs are fictional.' },
-    back: { zh: '← 全部课程', en: '← All courses' },
+    back: { zh: '← 返回', en: '← Back' },
     hint: { zh: '提示', en: 'Hint' },
     briefing: { zh: '说明', en: 'Briefing' },
     hMech: { zh: '链上状态', en: 'Chain state' },
@@ -109,7 +118,7 @@
     background: { zh: '背景', en: 'Background' },
     mechanics: { zh: '这次遇到的机制', en: 'Mechanics you ran into' },
     again: { zh: '再做一次', en: 'Try again' },
-    allLabs: { zh: '返回课程首页', en: 'Back to the course' },
+    allLabs: { zh: '返回这个网络', en: 'Back to this network' },
     toastTitle: { zh: '值班电话正在响', en: 'The pager is ringing' },
     toastBody: { zh: '{name} 尚未确认（第 {n} 次呼叫）。请在右侧告警卡片上点击确认。', en: '{name} has not been acknowledged (page {n}). Acknowledge it on the alert card.' },
     welcome: { zh: 'help 列出命令 · hint 提示 · objectives 目标 · ssm <节点名> 登录节点', en: 'help lists commands · hint for a hint · objectives for goals · ssm <node> to log in' },
@@ -144,7 +153,7 @@
     renderChrome();
     if (w) { $('ttl').textContent = `${w.scn.lab} · ${tr(w.scn.title)}`; w.net.panel.mount($('mech'), w); renderSide(true); renderSpeeds(); }
     else if (lv) renderChapter();
-    else renderHome();
+    else renderHome(homeNet);
   }
   function langSwitch(el) {
     el.innerHTML = `<button data-l="zh" class="${S.lang === 'zh' ? 'on' : ''}">中文</button><button data-l="en" class="${S.lang === 'en' ? 'on' : ''}">EN</button>`;
@@ -164,7 +173,7 @@
     const d = done[s.id];
     const meta = s.steps ? t('stepsN', { n: s.steps.length }) : `${t('difficulty')} ${'●'.repeat(s.difficulty || 1)}${'○'.repeat(3 - (s.difficulty || 1))}`;
     return `<button class="card" data-s="${s.id}" style="border-top:3px solid ${n.color}">
-      ${d ? `<span class="c-done">✔ ${d.grade}</span>` : ''}
+      ${d ? `<span class="c-done">${d.grade === '✔' ? '✔' : '✔ ' + d.grade}</span>` : ''}
       <span class="lab">${logo(n, 14)}${t('labWord')} ${s.lab}</span>
       <h3>${tr(s.title)}</h3><p>${tr(s.tagline)}</p>
       <ul>${(s.learn || []).map(x => `<li>${tr(x)}</li>`).join('')}</ul>
@@ -179,35 +188,57 @@
       <ul>${l.chapters.map(c => `<li>${tr(c.title)}</li>`).join('')}</ul>
       <span class="c-meta" style="display:grid;gap:.45rem"><span class="c-prog"><i style="width:${k / N * 100}%"></i></span><span style="display:flex;gap:1rem"><span>${t('chaptersDone', { d: k, n: N })}</span><span>${t('minutes', { n: l.minutes })}</span></span></span></button>`;
   }
-  function renderHome() {
+  // per-network progress for the three steps: [[done, total, label], …]
+  function netProgress(n, done) {
+    const lessons = S.lessons.filter(l => l.network === n.id);
+    const run = S.scenarios.filter(s => s.network === n.id && s.track === 'run');
+    const ops = S.scenarios.filter(s => s.network === n.id && s.track === 'ops');
+    const ch = lessons.reduce((a, l) => a + l.chapters.length, 0), chd = lessons.reduce((a, l) => a + lessonProgress(l), 0);
+    return { lessons, run, ops, steps: [[chd, ch, t('nChapters', { d: chd, n: ch })], [run.filter(s => done[s.id]).length, run.length, t('nLabs', { d: run.filter(s => done[s.id]).length, n: run.length })], [ops.filter(s => done[s.id]).length, ops.length, t('nLabs', { d: ops.filter(s => done[s.id]).length, n: ops.length })]] };
+  }
+  function moduleName(n) { const first = S.scenarios.find(s => s.network === n.id); return first ? tr(first.module) : n.name; }
+  function renderHome(netId) {
     const done = store.get().done || {};
     $('brand').innerHTML = t('brand');
     const nets = Object.values(S.networks);
+    const net = netId && S.networks[netId];
+    ['hero', 'how', 'planned', 'framework'].forEach(id => { $(id).style.display = net ? 'none' : ''; });
+    $('foot').textContent = t('foot');
+    if (net) { renderNetwork(net, done); return; }
     $('hero').innerHTML = `<h1>${t('heroTitle')}</h1><p>${t('heroLead2')} ${t('heroLead')}</p><div class="meta-line">${tr(T.heroMeta).map(x => `<span>${x.replace('{labs}', S.scenarios.length).replace('{nets}', nets.length).replace('{lessons}', S.lessons.length)}</span>`).join('')}</div>`;
     $('how').innerHTML = `<h2>${t('howTitle')}</h2><div class="how">${tr(T.how).map(([h, p]) => `<div><h4>${h}</h4><p>${p}</p></div>`).join('')}</div>`;
+    const names = tr(T.stepNames);
+    $('modules').innerHTML = `<section class="home-sec"><h2>${t('netsTitle')}</h2><p class="sec-sub">${t('netsSub')}</p>
+      <div class="net-grid">${nets.map(n => {
+        const p = netProgress(n, done);
+        const all = p.steps.every(([d, tot]) => tot && d === tot);
+        return `<button class="net-card" data-n="${n.id}" style="--c:${n.color}">
+          <span class="nc-h">${logo(n, 40)}<span><h3>${n.name}</h3><span class="nc-sub">${t('netMeta', { c: p.steps[0][1], r: p.steps[1][1], o: p.steps[2][1] })}</span></span>${all ? '<span class="c-done">✔</span>' : ''}</span>
+          <p>${tr(n.desc || '')}</p>
+          <ol class="nc-steps">${p.steps.map(([d, tot, label], i) => `<li class="${tot && d === tot ? 'ok' : d ? 'part' : ''}"><span class="m">${tot && d === tot ? '✔' : i + 1}</span><span>${names[i]}</span><span class="v">${tot ? (d ? label : t('notStarted')) : '—'}</span></li>`).join('')}</ol>
+          <span class="nc-meta"><span></span><span class="go">${t('open')}</span></span></button>`;
+      }).join('')}${PLANNED.filter(p => !nets.some(n => n.name === p.name)).map(p => `<div class="net-card soon"><span class="nc-h">${logo(p, 40)}<span><h3>${p.name}</h3><span class="nc-sub">${t('planned')}</span></span></span></div>`).join('')}</div></section>`;
+    $('modules').querySelectorAll('.net-card[data-n]').forEach(c => c.addEventListener('click', () => { location.hash = 'n=' + c.dataset.n; }));
+    $('planned').innerHTML = '';
+    $('framework').innerHTML = `<h2>${t('fwTitle')}</h2><p style="color:var(--ink-2);max-width:72ch">${t('fw')}</p>`;
+  }
+  function renderNetwork(n, done) {
     const names = tr(T.stepNames), subs = tr(T.stepSubs);
-    $('modules').innerHTML = nets.map(n => {
-      const lessons = S.lessons.filter(l => l.network === n.id);
-      const run = S.scenarios.filter(s => s.network === n.id && s.track === 'run');
-      const ops = S.scenarios.filter(s => s.network === n.id && s.track === 'ops');
-      const first = S.scenarios.find(s => s.network === n.id);
-      const mod = first ? tr(first.module) : n.name;
-      const soon = `<div class="card soon">${t('soon')}</div>`;
-      const steps = [
-        [lessons.length && lessons.every(l => lessonProgress(l) === l.chapters.length), lessons.map(l => lessonCard(l, n)).join('') || soon],
-        [run.length && run.every(s => done[s.id]), run.map(s => labCard(s, n, done)).join('') || soon],
-        [ops.length && ops.every(s => done[s.id]), ops.map(s => labCard(s, n, done)).join('') || soon],
-      ];
-      return `<section class="module"><div class="module-h">${logo(n, 28)}<h2>${mod}</h2></div><p class="desc">${tr(n.desc || '')}</p>
-        <ol class="path">${steps.map(([ok, cards], i) => `<li class="step ${ok ? 'done' : ''}"><span class="num">${ok ? '✔' : i + 1}</span>
-          <div class="step-h"><h3>${t('stepWord', { n: i + 1 })} · ${names[i]}</h3><span>${subs[i]}</span></div>
-          <div class="cards">${cards}</div></li>`).join('')}</ol></section>`;
-    }).join('');
+    const p = netProgress(n, done);
+    const soon = `<div class="card soon">${t('soon')}</div>`;
+    const steps = [
+      [p.lessons.length && p.lessons.every(l => lessonProgress(l) === l.chapters.length), p.lessons.map(l => lessonCard(l, n)).join('') || soon],
+      [p.run.length && p.run.every(s => done[s.id]), p.run.map(s => labCard(s, n, done)).join('') || soon],
+      [p.ops.length && p.ops.every(s => done[s.id]), p.ops.map(s => labCard(s, n, done)).join('') || soon],
+    ];
+    $('modules').innerHTML = `<button class="crumb" id="to-nets">${t('allNets')}</button>
+      <section class="module"><div class="module-h">${logo(n, 36)}<h2>${moduleName(n)}</h2></div><p class="desc">${tr(n.desc || '')}</p>
+      <ol class="path">${steps.map(([ok, cards], i) => `<li class="step ${ok ? 'done' : ''}"><span class="num">${ok ? '✔' : i + 1}</span>
+        <div class="step-h"><h3>${t('stepWord', { n: i + 1 })} · ${names[i]}</h3><span>${subs[i]}</span></div>
+        <div class="cards">${cards}</div></li>`).join('')}</ol></section>`;
+    $('to-nets').addEventListener('click', () => { location.hash = ''; });
     $('modules').querySelectorAll('.card[data-s]').forEach(c => c.addEventListener('click', () => { location.hash = 's=' + c.dataset.s; }));
     $('modules').querySelectorAll('.card[data-l]').forEach(c => c.addEventListener('click', () => { location.hash = 'l=' + c.dataset.l; }));
-    $('planned').innerHTML = `<h2>${t('plannedTitle')}</h2><div class="plan">${PLANNED.filter(p => !nets.some(n => n.name === p.name)).map(p => `<span class="net-chip soon">${logo(p, 16)}${p.name} · ${t('planned')}</span>`).join('')}</div>`;
-    $('framework').innerHTML = `<h2>${t('fwTitle')}</h2><p style="color:var(--ink-2);max-width:72ch">${t('fw')}</p>`;
-    $('foot').textContent = t('foot');
   }
 
   /* ---------- lessons (step 1) ---------- */
@@ -259,12 +290,13 @@
     if (!quiz.length) markChapter(l, i);
     renderLessonNav();
     const go = (id, h) => { const e = $(id); if (e) e.addEventListener('click', () => { location.hash = h; }); };
-    go('l-prev', `l=${l.id}/${i - 1}`); go('l-next', `l=${l.id}/${i + 1}`); if (run) go('l-run', 's=' + run.id); go('l-home', '');
+    go('l-prev', `l=${l.id}/${i - 1}`); go('l-next', `l=${l.id}/${i + 1}`); if (run) go('l-run', 's=' + run.id); go('l-home', 'n=' + l.network);
     window.scrollTo(0, 0);
   }
   function openLesson(id, i) {
     const l = S.lessons.find(x => x.id === id);
     if (!l) { location.hash = ''; return; }
+    homeNet = l.network;
     leavePlay();
     lv = { l, i: Math.max(0, Math.min(l.chapters.length - 1, i || 0)) };
     $('home').style.display = 'none'; $('learn').classList.add('on');
@@ -428,7 +460,7 @@
     $('ov-done').classList.add('on');
     $('again').addEventListener('click', () => { $('ov-done').classList.remove('on'); start(s.id); });
     $('list').addEventListener('click', () => {
-      $('ov-done').classList.remove('on'); location.hash = '';
+      $('ov-done').classList.remove('on'); location.hash = 'n=' + s.network;
       if (s.steps && r.success) setTimeout(() => { const c = document.querySelector(`.card[data-s="${s.id}"]`); const st = c && c.closest('.path').children[2]; if (st) st.scrollIntoView({ block: 'start' }); }, 50);
     });
   }
@@ -443,6 +475,7 @@
   function start(id) {
     const scn = S.scenarios.find(s => s.id === id);
     if (!scn) { location.hash = ''; return; }
+    homeNet = scn.network;
     leaveLesson();
     w = S.createWorld(scn);
     renderSide.objKey = null;
@@ -457,16 +490,20 @@
     renderChrome(); setBusy(false); renderSpeeds(); renderSide(true);
     showBrief(true);
   }
-  function goHome() {
+  let homeNet = null;   // network page to return to from a lesson or lab
+  function goHome(netId) {
     leaveLesson();
+    homeNet = netId || null;
     w = null; sh = null; paused = true;
     $('play').classList.remove('on'); $('home').style.display = 'block';
     $('ov-brief').classList.remove('on'); $('ov-done').classList.remove('on');
-    renderChrome(); renderHome();
+    renderChrome(); renderHome(homeNet);
+    window.scrollTo(0, 0);
   }
   function route() {
     const m = /s=([\w-]+)/.exec(location.hash), l = /l=([\w-]+)(?:\/(\d+))?/.exec(location.hash);
-    if (m) start(m[1]); else if (l) openLesson(l[1], +(l[2] || 0)); else goHome();
+    const n = /n=([\w-]+)/.exec(location.hash);
+    if (m) start(m[1]); else if (l) openLesson(l[1], +(l[2] || 0)); else goHome(n && S.networks[n[1]] ? n[1] : null);
   }
 
   S.on('done', ww => { renderSide(true); setTimeout(() => { if (ww === w && w.result) showDone(); }, 400); });
@@ -478,8 +515,8 @@
   initLang();
   document.addEventListener('DOMContentLoaded', () => {
     bindTerminal();
-    $('back').addEventListener('click', () => { location.hash = ''; });
-    $('l-back').addEventListener('click', () => { location.hash = ''; });
+    $('back').addEventListener('click', () => { location.hash = homeNet ? 'n=' + homeNet : ''; });
+    $('l-back').addEventListener('click', () => { location.hash = homeNet ? 'n=' + homeNet : ''; });
     $('obj').addEventListener('click', e => { const c = e.target.closest('.how code'); if (c && !busy) { $('cmd').value = c.textContent; $('cmd').focus(); } });
     $('btn-hint').addEventListener('click', () => { if (!busy) { echo('hint'); term.write('\n'); runLine('hint'); } });
     $('btn-brief').addEventListener('click', () => showBrief(false));

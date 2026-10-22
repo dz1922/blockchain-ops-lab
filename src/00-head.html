@@ -72,6 +72,33 @@ button{font:inherit;cursor:pointer}
 .arch h4{font-size:.95rem;margin-bottom:.3rem}
 .arch p{font-size:.86rem;color:var(--ink-2)}
 .foot{margin-top:3rem;font-family:var(--f-mono);font-size:.72rem;color:var(--ink-3);border-top:1px solid var(--line);padding-top:1rem}
+/* ---------- network grid on the landing page ---------- */
+.sec-sub{color:var(--ink-2);margin:-.4rem 0 1.2rem;max-width:72ch}
+.net-grid{display:grid;gap:1.1rem;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+.net-card{position:relative;text-align:left;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-top:3px solid var(--c,var(--line-2));border-radius:16px;padding:1.3rem 1.35rem 1.15rem;display:grid;gap:.9rem;align-content:start;transition:border-color .2s,transform .2s}
+.net-card:not(.soon):hover{border-color:var(--c);transform:translateY(-2px)}
+.net-card .nc-h{display:flex;align-items:center;gap:.8rem}
+.net-card h3{font-family:var(--f-display);font-size:1.35rem;line-height:1.15}
+.nc-sub{font-family:var(--f-mono);font-size:.7rem;color:var(--ink-3)}
+.net-card p{font-size:.9rem;color:var(--ink-2)}
+.nc-steps{list-style:none;padding:0;display:grid;gap:.35rem;border-top:1px solid var(--line);padding-top:.8rem}
+.nc-steps li{display:grid;grid-template-columns:22px 1fr auto;gap:.5rem;align-items:center;font-size:.86rem;color:var(--ink-2)}
+.nc-steps .m{width:20px;height:20px;border-radius:50%;border:1px solid var(--line-2);display:grid;place-items:center;font-family:var(--f-mono);font-size:.66rem;color:var(--ink-3)}
+.nc-steps li.ok .m{background:var(--lime);border-color:var(--lime);color:#0b0f0d}
+.nc-steps li.part .m{border-color:var(--lime);color:var(--lime)}
+.nc-steps .v{font-family:var(--f-mono);font-size:.7rem;color:var(--ink-3)}
+.nc-meta{display:flex;justify-content:space-between;gap:1rem;font-family:var(--f-mono);font-size:.7rem;color:var(--ink-3);align-self:end}
+.nc-meta .go{color:var(--ink-2)}
+.net-card:hover .go{color:var(--lime)}
+.net-card.soon{border-style:dashed;border-top-width:1px;background:none;opacity:.55;min-height:0}
+.net-card .c-done{margin-left:auto;font-family:var(--f-mono);font-size:.8rem;color:var(--lime)}
+@supports (grid-template-rows:subgrid){
+  .net-grid{grid-auto-rows:auto}
+  .net-grid .net-card:not(.soon){grid-row:span 4;grid-template-rows:subgrid}
+}
+.crumb{background:none;border:1px solid var(--line-2);color:var(--ink-2);border-radius:8px;padding:.3rem .75rem;font-family:var(--f-mono);font-size:.74rem;margin-bottom:.6rem}
+.crumb:hover{border-color:var(--lime);color:var(--lime)}
+#modules>.module:first-of-type{margin-top:1rem}
 /* ---------- learning path on the landing page ---------- */
 .path{list-style:none;padding:0;margin:1.2rem 0 0;display:grid;gap:1.6rem;position:relative}
 .path::before{content:"";position:absolute;left:15px;top:34px;bottom:34px;width:1px;background:var(--line-2)}

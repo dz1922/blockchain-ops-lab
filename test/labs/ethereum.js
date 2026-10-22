@@ -189,3 +189,105 @@ module.exports = [
     expect: r => flagged('no_interchange')(r).concat(r.viol && r.viol.two_signers !== undefined ? ['two_signers flagged unexpectedly'] : []),
   },
 ];
+
+// R1: the guided Hoodi install. Paths and names match the lab's step text.
+const KIT = '/home/ubuntu/hoodi-kit';
+const RKS = 'keystore-m_12381_3600_0_0_0-1792657380';
+const RDD = 'deposit_data-1792657380.json';
+const WALLET = '0x3c1e5a7b9d0f2a4c6e8b1d3f5a7c9e0b2d4f6a81';
+const BESU_URL = 'https://github.com/hyperledger/besu/releases/download/26.9.0/besu-26.9.0.tar.gz';
+const TEKU_URL = 'https://artifacts.consensys.net/public/teku/raw/names/teku.tar.gz/versions/26.9.0/teku-26.9.0.tar.gz';
+const installBesu = `
+    o.push(await T.cmd('mkdir -p /etc/ethereum')); o.push(await T.cmd('openssl rand -hex 32 > /etc/ethereum/jwt.hex'));
+    o.push(await T.cmd('curl -fsSL -o /tmp/besu.tar.gz ${BESU_URL}'));
+    o.push(await T.cmd('mkdir -p /opt/besu')); o.push(await T.cmd('tar xzf /tmp/besu.tar.gz -C /opt/besu --strip-components=1'));
+    o.push(await T.cmd('cp ${KIT}/besu.service /etc/systemd/system/')); o.push(await T.cmd('systemctl enable --now besu'));`;
+const installTeku = `
+    o.push(await T.cmd('curl -fsSL -o /tmp/teku.tar.gz ${TEKU_URL}'));
+    o.push(await T.cmd('mkdir -p /opt/teku')); o.push(await T.cmd('tar xzf /tmp/teku.tar.gz -C /opt/teku --strip-components=1'));
+    o.push(await T.cmd('cp ${KIT}/teku-beacon.service /etc/systemd/system/')); o.push(await T.cmd('systemctl enable --now teku-beacon'));`;
+const keygen = `deposit --non_interactive new-mnemonic --num_validators 1 --chain hoodi --withdrawal_address ${WALLET} --keystore_password hoodi-lab-passphrase`;
+module.exports.push(
+  {
+    name: 'run', // R1: build a Hoodi validator from scratch by following the steps
+    scenario: 'eth-run',
+    steps: `(async () => {
+    const o = [];
+    const PK = VSIM.S.networks.ethereum.helpers.keyFor('laptop', 'hoodi');
+    o.push(await T.cmd('ssm eth-new')); o.push(await T.cmd('sudo -i'));
+    o.push(await T.cmd('df -h /var/lib')); o.push(await T.cmd('timedatectl')); o.push(await T.cmd('ufw status'));
+    o.push(await T.cmd('ufw allow 30303')); o.push(await T.cmd('ufw allow 9000')); o.push(await T.cmd('ufw allow 9001/udp')); o.push(await T.cmd('ufw status'));
+    o.push(await T.cmd('systemctl start besu'));
+    ${installBesu}
+    o.push(await T.cmd('chmod 644 /etc/ethereum/jwt.hex')); o.push(await T.cmd('cat /etc/ethereum/jwt.hex'));
+    o.push(await T.cmd('cat ${KIT}/besu.service'));
+    await T.adv(150);
+    o.push(await T.cmd('journalctl -u besu -n 6 --no-pager'));
+    o.push(await T.cmd("curl -s -X POST -H 'Content-Type: application/json' -d '{\\"jsonrpc\\":\\"2.0\\",\\"id\\":1,\\"method\\":\\"eth_syncing\\",\\"params\\":[]}' localhost:8545 | jq .result"));
+    ${installTeku}
+    await T.adv(60);
+    o.push(await T.cmd('journalctl -u teku-beacon -n 6 --no-pager'));
+    o.push(await T.cmd('curl -s localhost:5051/eth/v1/node/syncing | jq .data'));
+    o.push(await T.cmd("curl -s -X POST -H 'Content-Type: application/json' -d '{\\"jsonrpc\\":\\"2.0\\",\\"id\\":1,\\"method\\":\\"eth_syncing\\",\\"params\\":[]}' localhost:8545 | jq .result"));
+    o.push(await T.cmd('systemctl status besu teku-beacon'));
+    await T.adv(1500);
+    o.push(await T.cmd('curl -s localhost:5051/eth/v1/node/syncing | jq .data'));
+    o.push(await T.cmd('curl -s localhost:5051/eth/v1/beacon/headers/finalized | jq .data.root'));
+    o.push(await T.cmd('curl -s https://checkpoint-sync.hoodi.ethpandaops.io/eth/v1/beacon/headers/finalized | jq .data.root'));
+    o.push(await T.cmd('df -h /var/lib')); o.push(await T.cmd('ss -tulpn'));
+    o.push(await T.cmd('exit')); o.push(await T.cmd('exit'));
+    o.push(await T.cmd('${keygen}'));
+    o.push(await T.cmd('ls ~/validator_keys'));
+    o.push(await T.cmd("jq '.[0] | {pubkey, withdrawal_credentials, network_name, fork_version}' ~/validator_keys/${RDD}"));
+    o.push(await T.cmd('launchpad deposit --network hoodi --deposit-data ~/validator_keys/${RDD}'));
+    o.push(await T.cmd('aws s3 cp ~/validator_keys/${RKS}.json s3://example-eth-ops/hoodi/'));
+    o.push(await T.cmd('ssm eth-new')); o.push(await T.cmd('sudo -i'));
+    o.push(await T.cmd('curl -s localhost:5051/eth/v1/beacon/states/head/validators/' + PK));
+    o.push(await T.cmd('aws s3 cp s3://example-eth-ops/hoodi/${RKS}.json /var/lib/teku-vc/validator-keys/'));
+    o.push(await T.cmd("echo 'hoodi-lab-passphrase' > /var/lib/teku-vc/validator-keys/${RKS}.txt"));
+    o.push(await T.cmd('ls /var/lib/teku-vc/validator/slashprotection'));
+    o.push(await T.cmd('cp ${KIT}/teku-vc.service /etc/systemd/system/')); o.push(await T.cmd('systemctl enable --now teku-vc'));
+    await T.adv(60);
+    o.push(await T.cmd('journalctl -u teku-vc -n 6 --no-pager'));
+    await T.adv(2400);
+    o.push(await T.cmd('curl -s localhost:5051/eth/v1/beacon/states/head/validators/' + PK + ' | jq .data'));
+    await T.adv(3000);
+    o.push(await T.cmd('curl -s localhost:5051/eth/v1/beacon/states/head/validators/' + PK + ' | jq .data.status'));
+    await T.adv(1800);
+    o.push(await T.cmd('journalctl -u teku-vc -n 8 --no-pager'));
+    o.push(await T.cmd('curl -s https://hoodi.beaconcha.in/api/v1/validator/' + PK + '/attestations | jq .data[0]'));
+    o.push(await T.cmd('objectives'));
+    ${tail}
+  })()`,
+    expect: r => ok(r).concat(r.viol && Object.keys(r.viol).length ? ['unexpected violation: ' + Object.keys(r.viol).join(',')] : []),
+  },
+  {
+    name: 'runTrapServerKeys', // R1 trap: generate the mnemonic on the validator server
+    scenario: 'eth-run',
+    steps: `(async () => {
+    const o = [];
+    o.push(await T.cmd('ssm eth-new'));
+    o.push(await T.cmd('${keygen}'));
+    await T.adv(30);
+    ${tail}
+  })()`,
+    expect: flagged('keys_on_server'),
+  },
+  {
+    name: 'runTrapJwt', // R1 trap: regenerate the JWT after Besu started, then start the beacon node
+    scenario: 'eth-run',
+    steps: `(async () => {
+    const o = [];
+    o.push(await T.cmd('ssm eth-new')); o.push(await T.cmd('sudo -i'));
+    ${installBesu}
+    await T.adv(30);
+    o.push(await T.cmd('openssl rand -hex 32 > /etc/ethereum/jwt.hex'));
+    ${installTeku}
+    await T.adv(180);
+    o.push(await T.cmd('journalctl -u teku-beacon -n 4 --no-pager'));
+    o.push(await T.cmd('curl -s localhost:5051/eth/v1/node/syncing | jq .data'));
+    ${tail}
+  })()`,
+    expect: r => flagged('jwt_mismatch')(r).concat(r.viol && r.viol.keys_on_server !== undefined ? ['keys_on_server flagged unexpectedly'] : []),
+  },
+);

@@ -12,9 +12,17 @@
 (function (S) {
   'use strict';
   const C = S.C;
-  const GENESIS = 1606824023, SPS = 12, SPE = 32;
-  const GVR = '0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95';
-  const MERGE_SLOT = 4700013, MERGE_BLOCK = 15537394;
+  const SPS = 12, SPE = 32;
+  // network parameters; init() switches them, so mainnet labs (E1–E3) keep the mainnet values
+  const NETS = {
+    mainnet: { name: 'mainnet', genesis: 1606824023, gvr: '0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95', mergeSlot: 4700013, mergeBlock: 15537394, chainId: '0x1', netVersion: '1', forkVersion: '00000000' },
+    hoodi: { name: 'hoodi', genesis: 1742213400, gvr: '0x212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f', mergeSlot: 0, mergeBlock: 0, chainId: '0x88bb0', netVersion: '560048', forkVersion: '10000910', checkpoint: 'https://checkpoint-sync.hoodi.ethpandaops.io', explorer: 'hoodi.beaconcha.in' },
+  };
+  let NET = NETS.mainnet, GENESIS = NET.genesis, GVR = NET.gvr, MERGE_SLOT = NET.mergeSlot, MERGE_BLOCK = NET.mergeBlock;
+  function useNet(name) { NET = NETS[name] || NETS.mainnet; GENESIS = NET.genesis; GVR = NET.gvr; MERGE_SLOT = NET.mergeSlot; MERGE_BLOCK = NET.mergeBlock; }
+  const DEPOSIT_CONTRACT = '0x00000000219ab540356cBB839Cbe05303d7705Fa';
+  const EL_SYNC_SEC = 1200;               // fresh install: simulated snap sync of the execution client
+  const KIT = '/home/ubuntu/hoodi-kit';
   const SYNC_RATE = 2;                    // slots per second while catching up
   const REWARD = 14200, PENALTY = 10900;  // gwei per epoch, attestation hit / miss
   const SLASH_PENALTY = 7812500;          // gwei, initial penalty (32 ETH / 4096)
@@ -71,13 +79,17 @@
   const running = c => !!c && !c.removed && c.state === 'running';
   const ready = (w, c) => running(c) && !c.hung && w.t >= c.readyAt;
   const comps = n => Object.values(n.eth.c).filter(c => c && !c.removed);
-  const elServing = (w, n) => ready(w, n.eth.c.el) && !(n.eth.elWipedAt != null && w.t - n.eth.elWipedAt < 20 * 3600);
+  // fresh install: the Engine API only works when both clients read the same JWT secret at startup
+  const engineOk = n => { const E = n.eth; if (!E.fresh) return true; const el = E.c.el, cl = E.c.cl; return !!(el && cl && el.jwt && cl.jwt && el.jwt === cl.jwt); };
+  const elServing = (w, n) => ready(w, n.eth.c.el) && !(n.eth.elWipedAt != null && w.t - n.eth.elWipedAt < 20 * 3600) && engineOk(n);
+  const elSyncing = n => !!(n.eth.fresh && n.eth.elSync && !n.eth.elSync.done);
   // the beacon answers REST while it starts, but only imports once it got past startup
   const clImports = (w, n) => ready(w, n.eth.c.cl) && n.eth.c.cl.crashAt == null;
   function argsOf(w, n, c) {
     if (c.kind === 'docker') return c.cfg.args;
     const unit = S.fsRead(w, n, c.unitPath) || '';
-    const m = /ExecStart=(.*(?:\\\n.*)*)/.exec(unit);
+    // fresh hosts read every continuation line; the mainnet hosts keep their original (first-line) parse
+    const m = (n.eth.fresh ? /ExecStart=((?:[^\n]*\\\n)*[^\n]*)/ : /ExecStart=(.*(?:\\\n.*)*)/).exec(unit);
     return m ? m[1].replace(/\\\n/g, ' ').split(/\s+/).filter(Boolean) : [];
   }
   // Teku enables QUIC by default from 26.7.0, on UDP 9001 unless --p2p-quic-port says otherwise
@@ -118,6 +130,8 @@
       let pk = null;
       try { pk = '0x' + JSON.parse(S.fsRead(w, n, dir + '/' + f)).pubkey; } catch (e) { errs.push(`Failed to load keystore ${dir}/${f}: invalid JSON`); return; }
       if (!S.fsGet(n, pwPath(n, f))) { errs.push(`Failed to load keystore ${dir}/${f}: password file ${pwPath(n, f)} not found`); return; }
+      const kg = w.chain.keygen && w.chain.keygen[pk];
+      if (kg && String(S.fsRead(w, n, pwPath(n, f)) || '').trim() !== kg.pass) { errs.push(`Failed to load keystore ${dir}/${f}: Failed to decrypt keystore, checksum validation failed (wrong password in ${pwPath(n, f)})`); return; }
       keys.push(pk);
     });
     return { keys, errs };
@@ -152,25 +166,75 @@
   }
 
   /* ---------- process lifecycle ---------- */
+  // fresh install: what systemd and the JVM check before a client gets going
+  function freshPreflight(w, n, c) {
+    const args = argsOf(w, n, c), bin = args[0] || '';
+    const fail = (lines, code, auto) => {
+      lines.forEach(([lvl, m]) => (lvl === 'SYS' ? sysLog(w, n, c.name, m) : c.role === 'el' ? blog(w, n, c, lvl, 'Besu', m) : tlog(w, n, c, lvl, m)));
+      c.restarts++;
+      setState(w, c, auto ? 'activating' : 'failed', code); c.nextStart = auto ? w.t + 10 : null;
+      return false;
+    };
+    c.svc.exec = args.join(' ').slice(0, 96) + (args.join(' ').length > 96 ? ' …' : '');
+    if (!S.fsGet(n, bin)) return fail([['SYS', `${c.name}.service: Failed to locate executable ${bin}: No such file or directory`], ['SYS', `${c.name}.service: Failed at step EXEC spawning ${bin}: No such file or directory`], ['SYS', `${c.name}.service: Main process exited, code=exited, status=203/EXEC`], ['SYS', `${c.name}.service: Failed with result 'exit-code'.`]], 203, false);
+    const vm = /(\d+\.\d+\.\d+)/.exec(S.fsRead(w, n, bin) || ''); if (vm) c.version = vm[1];
+    if (c.role === 'vc') c.doppel = args.some(a => a === '--doppelganger-detection-enabled' || a === '--doppelganger-detection-enabled=true');
+    if (c.role === 'el' || c.role === 'cl') {
+      const path = flagVal(args, c.role === 'el' ? '--engine-jwt-secret' : '--ee-jwt-secret-file', null);
+      c.jwtPath = path;
+      if (path) {
+        const txt = S.fsRead(w, n, path);
+        sysLog(w, n, c.name, `Started ${c.name}.service - ${c.svc.desc}.`);
+        if (txt === null) return fail(c.role === 'el'
+          ? [['ERROR', `Failed to start Besu: unable to read Engine API JWT secret: java.nio.file.NoSuchFileException: ${path}`], ['SYS', `${c.name}.service: Main process exited, code=exited, status=1/FAILURE`]]
+          : [['FATAL', `Failed to load the execution engine JWT secret: java.nio.file.NoSuchFileException: ${path}`], ['FATAL', 'Exiting due to fatal error'], ['SYS', `${c.name}.service: Main process exited, code=exited, status=1/FAILURE`]], 1, true);
+        const hex = txt.trim().replace(/^0x/, '');
+        if (!/^[0-9a-fA-F]{64}$/.test(hex)) return fail([[c.role === 'el' ? 'ERROR' : 'FATAL', `Invalid JWT secret in ${path}: expected 32 hex-encoded bytes`], ['SYS', `${c.name}.service: Main process exited, code=exited, status=1/FAILURE`]], 1, true);
+        c.jwt = hex.toLowerCase();
+        c.preLogged = true;
+      } else c.jwt = c.role === 'el' ? 'ephemeral:' + hx('eph' + w.t) : null;
+    }
+    return true;
+  }
   function start(w, n, c) {
     const E = n.eth;
-    c.pid = 1000 + Math.floor(w.rand() * 60000); c.startedAt = w.t; c.crashAt = null; c.nextStart = null;
+    c.pid = 1000 + Math.floor(w.rand() * 60000); c.startedAt = w.t; c.crashAt = null; c.nextStart = null; c.preLogged = false;
+    if (E.fresh) { if (!freshPreflight(w, n, c)) return; c.installed = true; }
     setState(w, c, 'running', 0);
-    if (c.kind === 'systemd') sysLog(w, n, c.name, `Started ${c.name}.service - ${c.svc.desc}.`);
+    if (c.kind === 'systemd' && !c.preLogged) sysLog(w, n, c.name, `Started ${c.name}.service - ${c.svc.desc}.`);
     if (c.role === 'el') {
       c.readyAt = w.t + 15;
       blog(w, n, c, 'INFO', 'Besu', `Starting Besu ${c.version}`);
       blog(w, n, c, 'INFO', 'Runner', 'Ethereum main loop is up.');
-      if (E.elWipedAt != null) blog(w, n, c, 'INFO', 'SnapSyncDownloader', 'Starting snap sync from an empty database');
+      if (E.elWipedAt != null || elSyncing(n)) blog(w, n, c, 'INFO', 'SnapSyncDownloader', 'Starting snap sync from an empty database');
+      if (E.fresh) {
+        E.elLastAdv = w.t;
+        if (!c.jwtPath) { blog(w, n, c, 'WARN', 'EngineAuthService', 'Engine API authentication enabled without key file. Expect ephemeral jwt.hex file in datadir'); S.fsWrite(n, '/var/lib/besu/jwt.hex', c.jwt.slice(10) + '\n', { owner: 'besu', mode: '600' }); }
+      }
     } else if (c.role === 'cl') {
       const p = clPorts(w, n, c);
       c.readyAt = w.t + 20;
       tlog(w, n, c, 'INFO', `Teku version: teku/v${c.version}/linux-x86_64/-eclipseadoptium-openjdk64bit-java-21`);
-      tlog(w, n, c, 'INFO', `Configuration | Network: mainnet, Storage Mode: PRUNE, P2P port: ${p.p2p}, QUIC port: ${p.quic === null ? 'disabled' : p.quic}`);
+      tlog(w, n, c, 'INFO', `Configuration | Network: ${NET.name}, Storage Mode: PRUNE, P2P port: ${p.p2p}, QUIC port: ${p.quic === null ? 'disabled' : p.quic}`);
       if (p.collide) { c.crashAt = w.t + 38; return; }
-      if (E.cpSync) { E.cpSync = false; E.clHead = Math.max(E.clHead, (ep(netSlot(w)) - 2) * SPE); tlog(w, n, c, 'INFO', 'Database is empty: initializing from checkpoint state at https://beaconstate.info'); }
-      tlog(w, n, c, 'INFO', `Loaded latest finalized state from database at epoch ${ep(Math.floor(E.clHead)) - 2}`);
-      if (netSlot(w) - Math.floor(E.clHead) > 64) S.lesson(w, 'catchup', S.LL('重启之后的追赶', 'Catching up after a restart'), S.LL('beacon 节点从数据库中保存的 head 开始追赶，大约每停机一天需要一小时。追赶期间节点处于 optimistic 状态，验证者不出证明。各种落后告警会同时出现，追平后自行恢复。这段时间不要再重启任何组件。', 'The beacon node resumes from the head stored in its database and needs about one hour per day of downtime to catch up. While it catches up it is optimistic and the validator does not attest. All the lag alerts fire together and clear on their own once it is in sync. Do not restart anything while it catches up.'));
+      const init = E.cpSync;
+      if (E.cpSync && E.fresh) {
+        E.cpSync = false;
+        const url = flagVal(argsOf(w, n, c), '--checkpoint-sync-url', null);
+        if (url) {
+          const fe = ep(netSlot(w)) - 2;
+          E.clHead = fe * SPE; E.cpFrom = url;
+          tlog(w, n, c, 'INFO', `Loading initial state from ${url}`);
+          tlog(w, n, c, 'INFO', `Loaded initial state at epoch ${fe} (state root = 0x${hx('st' + fe * SPE).slice(0, 8)}…, block root = 0x${hx('blk' + fe * SPE).slice(0, 8)}…, block slot = ${fe * SPE}). Please ensure that the supplied initial state corresponds to the latest finalized block as of the start of epoch ${fe}.`);
+        } else {
+          E.clHead = 0; E.genesisSync = true;
+          tlog(w, n, c, 'INFO', 'Initializing local storage from genesis state');
+          S.lesson(w, 'genesis', S.LL('没有 checkpoint，就从创世开始', 'Without a checkpoint, sync starts at genesis'), S.LL('没有 <code>--checkpoint-sync-url</code>，beacon 节点要从创世区块开始逐个处理一年多的 slot，在模拟里需要好几天。checkpoint sync 从一个可信来源下载最近的已最终确定状态，几分钟就能跟上网络。停止 teku-beacon，在服务文件中加上这个参数，删除 <code>/var/lib/teku-beacon</code> 下的数据，再启动。', 'Without <code>--checkpoint-sync-url</code> the beacon node has to process more than a year of slots from the genesis block, which takes days even in the simulator. Checkpoint sync downloads a recent finalized state from a trusted source and catches up with the network in minutes. Stop teku-beacon, add the flag to the unit file, delete the data under <code>/var/lib/teku-beacon</code>, and start it again.'));
+        }
+        E.clLastSlot = Math.floor(E.clHead); E.clLastAdv = w.t;
+      } else if (E.cpSync) { E.cpSync = false; E.clHead = Math.max(E.clHead, (ep(netSlot(w)) - 2) * SPE); tlog(w, n, c, 'INFO', 'Database is empty: initializing from checkpoint state at https://beaconstate.info'); }
+      if (!(init && E.fresh)) tlog(w, n, c, 'INFO', `Loaded latest finalized state from database at epoch ${ep(Math.floor(E.clHead)) - 2}`);
+      if (!E.fresh && netSlot(w) - Math.floor(E.clHead) > 64) S.lesson(w, 'catchup', S.LL('重启之后的追赶', 'Catching up after a restart'), S.LL('beacon 节点从数据库中保存的 head 开始追赶，大约每停机一天需要一小时。追赶期间节点处于 optimistic 状态，验证者不出证明。各种落后告警会同时出现，追平后自行恢复。这段时间不要再重启任何组件。', 'The beacon node resumes from the head stored in its database and needs about one hour per day of downtime to catch up. While it catches up it is optimistic and the validator does not attest. All the lag alerts fire together and clear on their own once it is in sync. Do not restart anything while it catches up.'));
     } else if (c.role === 'vc') {
       c.readyAt = w.t + 10;
       const { keys, errs } = keysOnDisk(w, n);
@@ -317,6 +381,202 @@
     n.mounts = [['/dev/nvme0n1p1', 3576, 1874, '/']];
   }
 
+  /* ---------- fresh install (guided lab): an empty Ubuntu host, the operator builds the stack ---------- */
+  // a firewall rule for a port; without a protocol both TCP and UDP must be allowed
+  function fwOpen(n, port, proto) {
+    if (!n.ufw || !n.ufw.active) return true;
+    const ok = pr => n.ufw.rules.some(r => r.port === port && (!r.proto || r.proto === pr));
+    return proto ? ok(proto) : ok('tcp') && ok('udp');
+  }
+  const inst = (n, k) => { const c = n.eth.c[k]; return !!c && c.installed !== false; };
+  const KIT_UNITS = {
+    'besu.service': `[Unit]\nDescription=Besu execution client (Hoodi)\nWants=network-online.target\nAfter=network-online.target\n\n[Service]\nUser=besu\nGroup=besu\nType=simple\nEnvironment=JAVA_OPTS=-Xmx6g\nExecStart=/opt/besu/bin/besu \\\n  --network=hoodi \\\n  --data-path=/var/lib/besu \\\n  --data-storage-format=BONSAI \\\n  --sync-mode=SNAP \\\n  --p2p-port=30303 \\\n  --rpc-http-enabled --rpc-http-host=127.0.0.1 --rpc-http-api=ETH,NET,WEB3 \\\n  --engine-rpc-port=8551 \\\n  --engine-jwt-secret=/etc/ethereum/jwt.hex \\\n  --metrics-enabled\nRestart=on-failure\nRestartSec=10\nTimeoutStopSec=300\n\n[Install]\nWantedBy=multi-user.target\n`,
+    'teku-beacon.service': `[Unit]\nDescription=Teku beacon node (Hoodi)\nWants=network-online.target\nAfter=network-online.target besu.service\n\n[Service]\nUser=teku\nGroup=teku\nType=simple\nEnvironment=JAVA_OPTS=-Xmx5g\nExecStart=/opt/teku/bin/teku \\\n  --network=hoodi \\\n  --data-path=/var/lib/teku-beacon \\\n  --data-storage-mode=prune \\\n  --p2p-port=9000 \\\n  --ee-endpoint=http://127.0.0.1:8551 \\\n  --ee-jwt-secret-file=/etc/ethereum/jwt.hex \\\n  --checkpoint-sync-url=https://checkpoint-sync.hoodi.ethpandaops.io \\\n  --rest-api-enabled --rest-api-interface=127.0.0.1 --rest-api-port=5051 \\\n  --metrics-enabled\nRestart=on-failure\nRestartSec=10\nTimeoutStopSec=300\n\n[Install]\nWantedBy=multi-user.target\n`,
+    'teku-vc.service': `[Unit]\nDescription=Teku validator client (Hoodi)\nWants=network-online.target\nAfter=network-online.target teku-beacon.service\n\n[Service]\nUser=teku\nGroup=teku\nType=simple\nEnvironment=JAVA_OPTS=-Xmx1g\nExecStart=/opt/teku/bin/teku vc \\\n  --network=hoodi \\\n  --data-path=/var/lib/teku-vc \\\n  --beacon-node-api-endpoint=http://127.0.0.1:5051 \\\n  --validator-keys=/var/lib/teku-vc/validator-keys:/var/lib/teku-vc/validator-keys \\\n  --validators-proposer-default-fee-recipient=WALLET \\\n  --doppelganger-detection-enabled=true\nRestart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=multi-user.target\n`,
+  };
+  function freshHost(w, sp) {
+    const n = sp.n, E = n.eth;
+    E.fresh = true; E.stack = 'systemd'; E.cpSync = true; E.elSync = { p: 0, done: false };
+    E.elPeers = 0; E.clPeers = 0;
+    n.ufw = { active: true, rules: [] };
+    n.mem = { total: 32 * 1024, used: 1200 }; n.cpus = 8; n.load = [0.08, 0.05, 0.01]; n.upBase = 5400;
+    n.mounts = [['/dev/nvme0n1p1', 48, 3, '/'], ['/dev/nvme1n1', 1863, 1, '/var/lib']];
+    n.disk = { size: 1863, used: 1, dev: '/dev/nvme1n1' };
+    ['/var/lib/besu', '/var/lib/teku-beacon', '/var/lib/teku-vc/validator-keys', '/var/lib/teku-vc/validator/slashprotection', '/etc/systemd/system', '/opt', '/home/ubuntu'].forEach(d => n.dirs.add(d));
+    Object.entries(KIT_UNITS).forEach(([f, c]) => S.fsWrite(n, `${KIT}/${f}`, c.replace('WALLET', sp.wallet || '0x0000000000000000000000000000000000000000'), { owner: 'ubuntu' }));
+    S.fsWrite(n, `${KIT}/README`, `Unit files for this host (Hoodi testnet).\n\n  besu.service         Besu execution client, binary /opt/besu/bin/besu\n  teku-beacon.service  Teku beacon node, binary /opt/teku/bin/teku\n  teku-vc.service      Teku validator client, same binary, "vc" subcommand\n\nAlready on the host: Java 21, the system users besu and teku,\nand the data directories under /var/lib.\nThe clients are not installed yet.\n`, { owner: 'ubuntu' });
+    n.commands = {
+      besu: ctx => { const b = S.fsRead(w, n, '/opt/besu/bin/besu'); if (b === null) return err(`bash: ${ctx.name}: command not found`, 127); return ctx.args.includes('--version') ? `besu/v${(/(\d+\.\d+\.\d+)/.exec(b) || [])[1]}/linux-x86_64/openjdk-java-21\n` : err(gray(S.L('besu 由 systemd 管理：systemctl status|restart besu', 'besu runs under systemd: systemctl status|restart besu'))); },
+      teku: ctx => { const b = S.fsRead(w, n, '/opt/teku/bin/teku'); if (b === null) return err(`bash: ${ctx.name}: command not found`, 127); if (ctx.args.includes('--version')) return `teku/v${(/(\d+\.\d+\.\d+)/.exec(b) || [])[1]}/linux-x86_64/-eclipseadoptium-openjdk64bit-java-21\n`; return tekuCli(ctx); },
+      ufw, openssl, deposit: depositCli,
+    };
+  }
+  // systemd loads unit files on demand: map each one to the client its ExecStart runs
+  function discoverUnits(w, n) {
+    S.fsList(n, '/etc/systemd/system').filter(f => f.endsWith('.service')).forEach(f => {
+      const name = f.slice(0, -8);
+      if (n.services[name]) return;
+      const unitPath = '/etc/systemd/system/' + f, txt = S.fsRead(w, n, unitPath) || '';
+      const m = /ExecStart=((?:[^\n]*\\\n)*[^\n]*)/.exec(txt); if (!m) return;
+      const exec = m[1].replace(/\\\n/g, ' ').trim(), bin = exec.split(/\s+/)[0];
+      const role = /besu$/.test(bin) ? 'el' : /teku$/.test(bin) ? (/\s(vc|validator-client)(\s|$)/.test(exec) ? 'vc' : 'cl') : null;
+      if (!role || n.eth.c[role]) return;
+      const desc = (/^Description=(.*)$/m.exec(txt) || [])[1] || name;
+      const svc = n.services[name] = { name, desc, unitPath, state: 'inactive', since: w.t, pid: 0, exec: exec.slice(0, 96) + ' …', enabled: false, memStr: () => (role === 'el' ? '6.8G' : role === 'cl' ? '4.3G' : '0.9G'), tasks: role === 'vc' ? 41 : 72 };
+      n.eth.c[role] = { key: role, role, kind: 'systemd', name, unitPath, svc, version: '26.9.0', state: 'inactive', since: w.t, createdAt: w.t, restarts: 0, exitCode: 0, keys: [], doppel: false, installed: false };
+    });
+  }
+  function freshListening(n) {
+    return w2 => {
+      const out = [], E = n.eth;
+      if (running(E.c.el)) out.push({ addr: '*:30303', proc: 'java', pid: E.c.el.pid }, { addr: '127.0.0.1:8545', proc: 'java', pid: E.c.el.pid }, { addr: '127.0.0.1:8551', proc: 'java', pid: E.c.el.pid });
+      if (ready(w2, E.c.cl)) { const p = clPorts(w2, n, E.c.cl); out.push({ addr: `*:${p.p2p}`, proc: 'java', pid: E.c.cl.pid }, { addr: '127.0.0.1:5051', proc: 'java', pid: E.c.cl.pid }); if (p.quic) out.push({ addr: `*:${p.quic} (udp)`, proc: 'java', pid: E.c.cl.pid }); }
+      return out;
+    };
+  }
+
+  /* validator lifecycle after a deposit (post-Pectra, compressed):
+     deposit block finalized and the deposit queue reaches it → pending_initialized
+     → eligible next epoch (pending_queued) → eligibility finalized → activation epoch 5 epochs later */
+  function statusOf(w, v) {
+    if (!v.fresh) return v.slashed != null ? 'active_slashed' : 'active_ongoing';
+    const e = ep(netSlot(w));
+    if (v.index == null) return null;
+    if (v.slashed != null) return 'active_slashed';
+    if (e < v.eligEp) return 'pending_initialized';
+    if (e < v.activation) return 'pending_queued';
+    return 'active_ongoing';
+  }
+  function lifecycle(w, v, ns) {
+    const e = ep(ns);
+    if (v.index == null && e >= v.seenEp) {
+      v.index = v.planIndex; v.bal = v.bal0 = 32000000000;
+      S.event(w, 'sys', S.LL(`存款已被处理：验证者 <b>${v.index}</b> 进入信标链状态（pending_initialized）。`, `The deposit was processed: validator <b>${v.index}</b> is now in the beacon state (pending_initialized).`));
+    }
+    const st = statusOf(w, v);
+    if (st && st !== v.lastStatus) {
+      if (v.lastStatus) Object.values(w.nodes).forEach(n => { const vc = n.eth.c.vc; if (running(vc) && (vc.keys || []).includes(v.pubkey)) tlog(w, n, vc, 'INFO', `Validator ${v.pubkey.slice(0, 10)}… (index ${v.index}) status changed from ${v.lastStatus} to ${st}${st === 'pending_queued' ? `, activation eligibility epoch ${v.eligEp}` : ''}`); });
+      if (st === 'active_ongoing') S.event(w, 'ok', S.LL(`验证者 <b>${v.index}</b> 在 epoch ${v.activation} 激活，开始承担证明任务。`, `Validator <b>${v.index}</b> activated at epoch ${v.activation} and now has attestation duties.`));
+      v.lastStatus = st;
+    }
+    if (v.next == null && e >= v.activation) v.next = v.activation;
+  }
+  function freshValJson(w, v) {
+    const e = ep(netSlot(w));
+    return { index: String(v.index), balance: String(Math.round(v.bal)), status: statusOf(w, v), validator: { pubkey: v.pubkey, withdrawal_credentials: '0x010000000000000000000000' + v.withdrawal, effective_balance: '32000000000', slashed: v.slashed != null, activation_eligibility_epoch: e >= v.eligEp ? String(v.eligEp) : FAR, activation_epoch: e >= v.eligEp + 2 ? String(v.activation) : FAR, exit_epoch: FAR, withdrawable_epoch: FAR } };
+  }
+
+  /* ---------- fresh-install commands ---------- */
+  const ufw = ctx => {
+    const n = ctx.host, F = n.ufw, a = ctx.args;
+    if (!ctx.isRoot) return err('ERROR: You need to be root to run this script');
+    const fmt = r => r.port + (r.proto ? '/' + r.proto : '');
+    switch (a[0]) {
+      case 'status': {
+        if (!F.active) return 'Status: inactive\n';
+        let out = 'Status: active\n';
+        if (a[1] === 'verbose') out += 'Logging: on (low)\nDefault: deny (incoming), allow (outgoing), disabled (routed)\nNew profiles: skip\n';
+        if (!F.rules.length) return out;
+        const rows = F.rules.map(r => [fmt(r), 'ALLOW IN', 'Anywhere']).concat(F.rules.map(r => [fmt(r) + ' (v6)', 'ALLOW IN', 'Anywhere (v6)']));
+        return out + '\n' + S.table([['--', '------', '----'], ...rows], ['To', 'Action', 'From']) + '\n';
+      }
+      case 'allow': {
+        const m = /^(\d+)(?:\/(tcp|udp))?$/.exec(a[1] || '');
+        if (!m) return err(`ERROR: Bad port '${a[1] || ''}'`);
+        const r = { port: Number(m[1]), proto: m[2] || null };
+        if (F.rules.some(x => x.port === r.port && x.proto === r.proto)) return 'Skipping adding existing rule\nSkipping adding existing rule (v6)\n';
+        F.rules.push(r);
+        return 'Rule added\nRule added (v6)\n';
+      }
+      case 'delete': {
+        const m = a[1] === 'allow' && /^(\d+)(?:\/(tcp|udp))?$/.exec(a[2] || '');
+        if (!m) return err('ERROR: Could not find rule');
+        const before = F.rules.length;
+        F.rules = F.rules.filter(x => !(x.port === Number(m[1]) && x.proto === (m[2] || null)));
+        return before === F.rules.length ? 'Could not delete non-existent rule\nCould not delete non-existent rule (v6)\n' : 'Rule deleted\nRule deleted (v6)\n';
+      }
+      case 'enable': F.active = true; return 'Firewall is active and enabled on system startup\n';
+      case 'disable': F.active = false; return 'Firewall stopped and disabled on system startup\n';
+      default: return err('Usage: ufw COMMAND\n\nCommands:\n enable | disable | status [verbose] | allow PORT[/tcp|/udp] | delete allow PORT[/tcp|/udp]');
+    }
+  };
+  const openssl = ctx => {
+    const a = ctx.args;
+    if (a[0] === 'rand' && a[1] === '-hex' && /^\d+$/.test(a[2] || '')) { let s = ''; for (let i = 0; i < Number(a[2]) * 2; i++) s += Math.floor(ctx.w.rand() * 16).toString(16); return s + '\n'; }
+    return err(`Invalid command '${a.join(' ')}'; ${S.L('本练习只支持 openssl rand -hex N', 'only openssl rand -hex N is available in this lab')}`);
+  };
+  const WORDS = 'abandon absorb account alley anchor april argue armor autumn bamboo basket bench blossom bracket brisk cabin canal carbon cattle cereal chalk citizen cluster coral cradle cruise dawn depth diesel dolphin eager echo elbow enrich erosion fabric feather fiber flame fossil galaxy garlic gather ginger glimpse harbor hazard hollow husband illness inch insect island jacket jungle kettle kidney ladder lantern lizard lumber magnet marble meadow mirror monkey nephew noodle oyster paddle pepper pigeon pistol planet pond quarter radar ramp ribbon rocket saddle salmon scatter shadow shrimp silent sketch slogan spider stable sugar tackle timber tongue tunnel umbrella velvet vessel walnut window wrist yellow zebra'.split(' ');
+  const FORKS = { mainnet: '00000000', sepolia: '90000069', hoodi: '10000910' };
+  const keyFor = (hostId, chain) => { const h = hx('validator-key:' + hostId + ':' + chain, 95); return '0x' + '89ab'[parseInt(h[0], 16) % 4] + h; };
+  async function depositCli(ctx) {
+    const w = ctx.w, a = ctx.args, h = ctx.host;
+    const sub = a.find(x => !x.startsWith('-') && /mnemonic|bls|exit|partial/.test(x));
+    if (!sub || a.includes('--help')) return 'Usage: deposit [OPTIONS] COMMAND [ARGS]...\n\nCommands:\n  existing-mnemonic                 Generate (or recover) keys from an existing mnemonic\n  new-mnemonic                      Generate a new mnemonic and keys\n  generate-bls-to-execution-change  Generate BLS to execution address change message\n  exit-transaction-keystore         Generate an exit message using a keystore\n';
+    if (sub !== 'new-mnemonic') return err(gray(S.L(`本练习只用到 new-mnemonic。`, `this lab only uses new-mnemonic.`)));
+    const chain = flagVal(a, '--chain', null), num = flagVal(a, '--num_validators', null), addr = flagVal(a, '--withdrawal_address', null), pass = flagVal(a, '--keystore_password', null), folder = flagVal(a, '--folder', '.');
+    const missing = [['--num_validators', num], ['--chain', chain], ['--withdrawal_address', addr], ['--keystore_password', pass]].filter(x => !x[1] || x[1] === 'true').map(x => x[0]);
+    if (missing.length) return err(gray(S.L(`这个模拟终端不能回答交互提示，请在命令行里给出：${missing.join(' ')}。在真实的机器上，密码应在提示时输入，不要写在命令行里。`, `this simulated terminal cannot answer the interactive prompts; pass ${missing.join(' ')} on the command line. On a real machine, type the password at the prompt instead of putting it on the command line.`)));
+    if (!(chain in FORKS) && !['plataberget', 'ephemery', 'gnosis', 'chiado'].includes(chain)) return err(`Error: Invalid value for '--chain': '${chain}' is not one of 'mainnet', 'sepolia', 'hoodi', 'plataberget', 'ephemery', 'gnosis', 'chiado'.`, 2);
+    if (!(chain in FORKS)) return err(gray(S.L('本练习只模拟 mainnet、sepolia 和 hoodi。', 'this lab only models mainnet, sepolia and hoodi.')));
+    if (num !== '1') return err(gray(S.L('本练习只生成一个验证者：--num_validators 1', 'this lab generates one validator: --num_validators 1')));
+    if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) return err(`Error: Invalid value for '--withdrawal_address': ${addr} is not a valid Ethereum address.`, 2);
+    if (pass.length < 8) return err('The password length should be at least 8. Please retype');
+    const dir = S.norm(ctx.resolve(folder) + '/validator_keys');
+    if (!ctx.sh.canWrite(dir + '/x')) return err(`Error: [Errno 13] Permission denied: '${dir}'`);
+    await ctx.sleep(5);
+    const ts = w.chain.keyTs || Math.floor(w.now() / 1000), pk = keyFor(h.id, chain);
+    const ks = `${dir}/keystore-m_12381_3600_0_0_0-${ts}.json`, dd = `${dir}/deposit_data-${ts}.json`;
+    const wc = '01' + '00'.repeat(11) + addr.slice(2).toLowerCase();
+    S.fsWrite(h, ks, keystoreJson({ pubkey: pk }), { mode: '600', owner: ctx.sess.user });
+    S.fsWrite(h, dd, JSON.stringify([{ pubkey: pk.slice(2), withdrawal_credentials: wc, amount: 32000000000, signature: hx('sig' + pk, 192), deposit_message_root: hx('dmr' + pk), deposit_data_root: hx('ddr' + pk), fork_version: FORKS[chain], network_name: chain, deposit_cli_version: '1.2.2' }]) + '\n', { owner: ctx.sess.user });
+    (w.chain.keygen = w.chain.keygen || {})[pk] = { host: h.id, laptop: h.kind === 'laptop', chain, addr: addr.toLowerCase(), pass, ts, ks, dd };
+    const r = S.rng(parseInt(hx('mn' + h.id, 8), 16)), pool = WORDS.slice(), words = Array.from({ length: 24 }, () => pool.splice(Math.floor(r() * pool.length), 1)[0]);
+    if (h.kind !== 'laptop') {
+      S.flag(w, 'keys_on_server');
+      S.lesson(w, 'keys_server', S.LL('助记词不该出现在服务器上', 'A mnemonic does not belong on a server'), S.LL('助记词可以推导出签名钥匙，也控制着取款凭证。服务器一直联网、有多人登录、会被备份和快照，助记词在这里出现过一次，就要当作已经泄露。签名钥匙可以换，助记词泄露却意味着资金可能被人提走。钥匙要在离线或专用的工作电脑上生成，服务器上只放加密的 keystore 和它的密码。', 'A mnemonic derives the signing keys and controls the withdrawal credentials. A server is always online, has several people logging in, and gets backed up and snapshotted; once a mnemonic has been on it, treat it as leaked. A signing key can be replaced, but a leaked mnemonic can mean the funds are taken. Generate keys on an offline or dedicated workstation, and put only the encrypted keystore and its password on the server.'));
+    }
+    return `\n***Using the tool on an offline and secure device is highly recommended to keep your mnemonic safe.***\n\nThis is your mnemonic (seed phrase). Write it down and store it safely. It is the ONLY way to retrieve your deposit.\n\n${words.join(' ')}\n\n${gray(S.L('（练习用的助记词。真实的助记词只抄在纸上，不要粘贴到任何地方。）', '(a lab mnemonic. A real one is written on paper and never pasted anywhere.)'))}\n\nCreating your keys.\nCreating your keystores:\t  [####################################]  1/1\nCreating your depositdata:\t  [####################################]  1/1\nVerifying your keystores:\t  [####################################]  1/1\nVerifying your depositdata:\t  [####################################]  1/1\n\nSuccess!\nYour keys can be found at: ${dir}\n`;
+  }
+  async function launchpad(ctx) {
+    const w = ctx.w, a = ctx.args, net = flagVal(a, '--network', null), file = flagVal(a, '--deposit-data', null);
+    const usage = `usage: launchpad deposit --network hoodi --deposit-data FILE\n${gray(S.L('本课程的辅助命令，代替 Hoodi Launchpad 网页（https://hoodi.launchpad.ethereum.org）：它像网页一样检查存款文件，然后从你的测试网钱包发送 32 ETH 存款交易。', 'A course helper that stands in for the Hoodi Launchpad web page (https://hoodi.launchpad.ethereum.org): it checks the deposit file the way the page does, then sends the 32 ETH deposit transaction from your testnet wallet.'))}\n`;
+    if (a[0] !== 'deposit' || !net || !file || file === 'true') return err(usage, 2);
+    if (net !== NET.name) return err(`launchpad: this helper is connected to the ${NET.name} launchpad, not ${net}`);
+    const txt = ctx.read(file);
+    if (txt === null) return err(`launchpad: ${file}: No such file or directory`);
+    let d; try { d = JSON.parse(txt); } catch (e) { d = null; }
+    if (!Array.isArray(d) || !d[0] || !d[0].pubkey) return err('launchpad: this is not a deposit data file (expected the deposit_data-*.json written by the deposit CLI)');
+    d = d[0];
+    const pk = '0x' + d.pubkey, kg = (w.chain.keygen || {})[pk], wallet = w.chain.wallet;
+    const head = `Hoodi Launchpad helper (stands in for https://hoodi.launchpad.ethereum.org)\nDeposit data: ${ctx.resolve(file)}\n`;
+    if (d.network_name !== NET.name || d.fork_version !== NET.forkVersion) return err(`${head}  network_name    ${d.network_name} (fork_version ${d.fork_version})   ${C.red('REJECTED')}\nlaunchpad: this deposit data was made for ${d.network_name}. A deposit for another network has an invalid signature here: the contract would take the ETH and the beacon chain would ignore the deposit.`);
+    if (!/^0[12]/.test(d.withdrawal_credentials)) return err(`${head}  withdrawal      0x${d.withdrawal_credentials.slice(0, 2)} credentials   ${C.red('REJECTED')}\nlaunchpad: set an execution withdrawal address (--withdrawal_address) when you generate the keys.`);
+    if (!kg) return err(`${head}launchpad: the deposit signature does not verify against this public key`);
+    if (w.chain.deposits && w.chain.deposits[pk]) return err(`${head}launchpad: a deposit for ${pk.slice(0, 12)}… was already sent in block #${groupDigits(w.chain.deposits[pk].block)}. A second deposit would only add to the same validator's balance.`);
+    ctx.write(`${head}  validators      1\n  pubkey          ${pk.slice(0, 10)}…${pk.slice(-6)}\n  network_name    ${d.network_name} (fork_version ${d.fork_version})   ${C.green('ok')}\n  withdrawal      0x${d.withdrawal_credentials.slice(0, 2)} credentials -> 0x${d.withdrawal_credentials.slice(-40)}   ${C.green('ok')}\n  amount          ${d.amount / 1e9} ETH   ${C.green('ok')}\nWallet ${wallet}  balance 41.2071 ETH\nSending 32 ETH to the deposit contract ${DEPOSIT_CONTRACT} ...\n`);
+    await ctx.sleep(14);
+    const ns = netSlot(w), depEp = ep(ns), block = blockAt(ns), tx = '0x' + hx('deptx' + pk);
+    (w.chain.deposits = w.chain.deposits || {})[pk] = { t: w.t, block, tx };
+    const v = { fresh: true, pubkey: pk, withdrawal: d.withdrawal_credentials.slice(-40), index: null, planIndex: w.chain.planIndex || 1293417, hist: [], everSigned: false, home: Object.keys(w.nodes)[0], bal: 0, bal0: 0, depEp, seenEp: depEp + 4, eligEp: depEp + 5, activation: depEp + 12, next: null };
+    w.chain.vals.push(v);
+    S.event(w, 'sys', S.LL(`存款交易已上链（区块 #${groupDigits(block)}）。信标链要等这个区块被最终确定、存款队列轮到它，才会加入这个验证者。`, `The deposit transaction is on chain (block #${groupDigits(block)}). The beacon chain adds the validator once that block is finalized and the deposit queue reaches it.`));
+    return `Transaction ${tx} confirmed in block #${groupDigits(block)}\nThe beacon chain adds the validator after this block is finalized and the deposit queue reaches it.\nTrack it with the beacon API: /eth/v1/beacon/states/head/validators/${pk}\n`;
+  }
+  // release downloads and the public checkpoint endpoint
+  function download(w, req) {
+    const tarball = (name, v, size) => ({ status: 200, size, body: 'TARBALL:' + JSON.stringify({ files: { [`bin/${name}`]: { c: `#!/bin/sh\n# ${name} ${v} launcher (JVM)\n`, mode: '755' }, [`lib/${name}-${v}.jar`]: { c: '(jar)', mode: '644' }, LICENSE: { c: 'Apache License 2.0\n', mode: '644' } } }) });
+    let m;
+    if (req.host === 'github.com' && (m = /^\/hyperledger\/besu\/releases\/download\/([\d.]+)\/besu-([\d.]+)\.tar\.gz$/.exec(req.path))) return m[1] === m[2] && /^26\.(8|9)\./.test(m[1]) ? tarball('besu', m[1], 141e6) : { status: 404, body: 'Not Found' };
+    if (req.host === 'github.com') return { status: 404, body: 'Not Found' };
+    if (req.host === 'artifacts.consensys.net' && (m = /^\/public\/teku\/raw\/names\/teku\.tar\.gz\/versions\/([\d.]+)\/teku-([\d.]+)\.tar\.gz$/.exec(req.path))) return m[1] === m[2] && /^26\.(8|9)\./.test(m[1]) ? tarball('teku', m[1], 172e6) : { status: 404, body: 'Not Found' };
+    if (NET.checkpoint && req.host === new URL(NET.checkpoint).host) {
+      const fe = ep(netSlot(w)) - 2, slot = fe * SPE;
+      if (req.path === '/eth/v1/beacon/headers/finalized') return j(200, { execution_optimistic: false, finalized: true, data: { root: '0x' + hx('blk' + slot), canonical: true, header: { message: { slot: String(slot), proposer_index: String((slot * 7919) % 1200000), parent_root: '0x' + hx('blk' + (slot - 1)), state_root: '0x' + hx('st' + slot), body_root: '0x' + hx('bd' + slot) }, signature: '0x' + hx('sig' + slot, 192) } } });
+      return j(404, { code: 404, message: 'Not found' });
+    }
+    return null;
+  }
+
   function makeNode(w, sp) {
     const n = S.makeHost({
       id: sp.id, moniker: sp.id, hostname: sp.id, instanceId: sp.instanceId, region: sp.region, ip: sp.ip, kind: 'node', homeUser: 'ubuntu',
@@ -324,9 +584,11 @@
     });
     n.eth = { stack: sp.stack, c: {}, elHead: 0, elLastAdv: 0, clHead: 0, clLastSlot: 0, clLastAdv: 0, headSeenAt: 0, elPeers: 25, clPeers: 68, lastLog: {}, imported: {} };
     sp.n = n;
-    if (sp.stack === 'stereum') stereumHost(w, sp); else systemdHost(w, sp);
-    n.services['eth-collector'] = { name: 'eth-collector', desc: 'Ethereum metrics collector', unitPath: '/etc/systemd/system/eth-collector.service', state: 'active', since: -86400 * 20, pid: 1611, exec: '/opt/eth-collector/collector.sh' };
-    n.services['grafana-agent'] = { name: 'grafana-agent', desc: 'Monitoring system and forwarder', unitPath: '/usr/lib/systemd/system/grafana-agent.service', state: 'active', since: -86400 * 20, pid: 1622, exec: '/usr/bin/grafana-agent --config.file /etc/grafana-agent.yaml' };
+    if (sp.fresh) freshHost(w, sp); else if (sp.stack === 'stereum') stereumHost(w, sp); else systemdHost(w, sp);
+    if (!sp.fresh) {
+      n.services['eth-collector'] = { name: 'eth-collector', desc: 'Ethereum metrics collector', unitPath: '/etc/systemd/system/eth-collector.service', state: 'active', since: -86400 * 20, pid: 1611, exec: '/opt/eth-collector/collector.sh' };
+      n.services['grafana-agent'] = { name: 'grafana-agent', desc: 'Monitoring system and forwarder', unitPath: '/usr/lib/systemd/system/grafana-agent.service', state: 'active', since: -86400 * 20, pid: 1622, exec: '/usr/bin/grafana-agent --config.file /etc/grafana-agent.yaml' };
+    }
     n.services['amazon-ssm-agent'] = { name: 'amazon-ssm-agent', desc: 'amazon-ssm-agent', unitPath: '/etc/systemd/system/amazon-ssm-agent.service', state: 'active', since: -86400 * 20, pid: 812, exec: '/usr/bin/amazon-ssm-agent' };
     n.dirs.add('/tmp'); n.dirs.add('/root'); n.dirs.add('/home/ssm-user');
     n.procs = w2 => comps(n).filter(running).map(c => ({ user: c.kind === 'docker' ? '2000' : (c.role === 'el' ? 'besu' : c.role === 'mev' ? 'mevboost' : 'teku'), pid: c.pid, cpu: c.role === 'el' ? '84.2' : c.role === 'cl' ? (c.hung ? '0.3' : '61.7') : '3.1', mem: c.role === 'el' ? '17.8' : c.role === 'cl' ? '11.2' : '1.7', cmd: c.kind === 'docker' ? `${c.entry} ${c.cfg.args.slice(0, 3).join(' ')} …` : c.svc.exec }));
@@ -337,6 +599,7 @@
       if (running(E.c.vc)) out.push({ addr: '127.0.0.1:5052', proc: E.stack === 'stereum' ? 'docker-proxy' : 'java', pid: E.c.vc.pid });
       return out;
     };
+    if (sp.fresh) n.listening = freshListening(n);
     return n;
   }
 
@@ -373,6 +636,7 @@
     if (!running(cl) || w.t < cl.readyAt) return 'java.net.ConnectException: Connection refused';
     if (cl.hung) return 'java.net.SocketTimeoutException: timeout';
     if (!elServing(w, n)) return 'Beacon node is syncing (execution client offline)';
+    if (elSyncing(n)) return 'Beacon node is optimistic (execution client still syncing)';
     if (cl.crashAt != null) return 'Beacon node is syncing';
     if (netSlot(w) - Math.floor(E.clHead) > 1) return 'Beacon node is syncing';
     return null;
@@ -480,23 +744,57 @@
     });
     const elUp = elServing(w, n);
     const clUp = ready(w, cl);
+    const L = E.lastLog, every = (k, sec) => { if (w.t - (L[k] ?? -1e9) >= sec) { L[k] = w.t; return true; } return false; };
     if (clImports(w, n) && elUp) {
       if (E.clHead < ns) E.clHead = Math.min(ns, E.clHead + SYNC_RATE * dt);
       if (ns - E.clHead <= 1) E.clHead = ns;
-      const b = blockAt(Math.floor(E.clHead));
-      if (b > E.elHead) { E.elHead = b; E.elLastAdv = w.t; }
+      if (elSyncing(n)) {
+        // snap sync needs a sync target from the beacon node, so it only runs once the beacon is near the head
+        if (ns - E.clHead <= 64) {
+          E.elSync.p = Math.min(1, E.elSync.p + dt / EL_SYNC_SEC * (fwOpen(n, 30303) ? 1 : 0.6));
+          const b = Math.floor(E.elSync.p * blockAt(ns));
+          if (b > E.elHead) { E.elHead = b; E.elLastAdv = w.t; }
+          if (every('elSnap', 30) && E.elSync.p < 1) blog(w, n, el, 'INFO', 'SnapWorldStateDownloader', `Worldstate download progress: ${(100 * Math.min(1, E.elSync.p * 1.15)).toFixed(2)}%, block headers imported ${groupDigits(E.elHead)} of ${groupDigits(blockAt(ns))}, Peer count: ${E.elPeers}`);
+          if (E.elSync.p >= 1) {
+            E.elSync.done = true; E.elSync.at = w.t; E.elHead = blockAt(ns);
+            blog(w, n, el, 'INFO', 'SnapSyncDownloader', 'Snap sync completed. Switching to full sync');
+            blog(w, n, el, 'INFO', 'DefaultSynchronizer', `Besu is in sync with the network at block #${groupDigits(E.elHead)}`);
+          }
+        }
+      } else {
+        const b = blockAt(Math.floor(E.clHead));
+        if (b > E.elHead) { E.elHead = b; E.elLastAdv = w.t; }
+      }
     }
     if (Math.floor(E.clHead) > E.clLastSlot) { E.clLastSlot = Math.floor(E.clHead); E.clLastAdv = w.t; }
     if (clUp) E.headSeenAt = w.t;
-    if (clUp) E.clPeers = Math.min(68, Math.max(E.clPeers, 12 + Math.floor((w.t - cl.readyAt) / 40)));
+    const cap = E.fresh && !fwOpen(n, 9000) ? 14 : 68;
+    if (clUp) E.clPeers = Math.min(cap, Math.max(E.clPeers, 12 + Math.floor((w.t - cl.readyAt) / 40)));
     else if (!running(cl)) E.clPeers = 0;
+    if (E.fresh) {
+      if (ready(w, el)) E.elPeers = Math.min(fwOpen(n, 30303) ? 25 : 7, Math.floor((w.t - el.readyAt) / 30) + 2);
+      else E.elPeers = 0;
+      if (clUp && ready(w, el) && (!fwOpen(n, 30303) || !fwOpen(n, 9000)) && w.t - cl.readyAt > 600) S.lesson(w, 'inbound', S.LL('没有入站连接，对等节点就少', 'No inbound connections, fewer peers'), S.LL('防火墙没有放行 P2P 端口时，节点只能主动向外连接，别人连不进来。对等节点数停在一个很低的水平，同步更慢，区块和证明也更晚收到。放行 30303（TCP 和 UDP）和 9000（TCP 和 UDP），对等节点数会慢慢回升。', 'When the firewall does not allow the P2P ports, the node can only dial out and nobody can dial in. The peer count stays low, sync is slower, and blocks and attestations arrive later. Allow 30303 (TCP and UDP) and 9000 (TCP and UDP) and the peer count recovers over time.'));
+      // a beacon node that cannot authenticate to Besu: both are up, the Engine API answers 401
+      const bad = ready(w, el) && clUp && !engineOk(n);
+      if (bad) {
+        E.jwtBadSince = E.jwtBadSince ?? w.t;
+        if (every('clJwt', 30)) tlog(w, n, cl, 'WARN', 'Execution Client request failed: engine_exchangeCapabilities returned HTTP 401 Unauthorized. Check that --ee-jwt-secret-file matches the secret used by the execution client');
+        if (w.t - E.jwtBadSince >= 60) {
+          S.flag(w, 'jwt_mismatch');
+          S.lesson(w, 'jwt', S.LL('两个客户端必须使用同一个 JWT 密钥', 'Both clients must use the same JWT secret'), S.LL('Engine API 的每个请求都带一个用共享密钥签名的 JWT。Besu 和 Teku 各自在启动时读取密钥文件。如果文件在 Besu 启动之后被重新生成，或者两边指向不同的文件，Besu 会以 401 拒绝 beacon 节点的每一个请求。beacon 节点报告执行客户端离线，Besu 报告共识客户端没有调用它。修复方法是让两边读同一个文件，然后两边都重启。', 'Every Engine API request carries a JWT signed with the shared secret. Besu and Teku each read the secret file when they start. If the file is regenerated after Besu started, or the two point at different files, Besu rejects every request from the beacon node with 401. The beacon node reports the execution client offline, and Besu reports that the consensus client does not call it. The fix is to point both at the same file and restart both.'));
+        }
+      } else E.jwtBadSince = null;
+      // disk use grows with the databases
+      if (n.mounts && n.mounts[1]) n.mounts[1][2] = Math.max(n.mounts[1][2], 1 + (E.cpFrom || E.genesisSync ? 9 : 0) + Math.floor((E.elSync.done ? 1 : E.elSync.p) * 96) + (E.elSync.done ? Math.floor((w.t - E.elSync.at) / 7200) : 0));
+      if (clUp && E.cpFrom && elUp && elSyncing(n) && ns - E.clHead <= 1) S.lesson(w, 'optimistic', S.LL('beacon 已跟上，执行层还在同步', 'The beacon node is at the head, the execution client is not'), S.LL('checkpoint sync 让 beacon 节点几分钟内就跟上网络，但 Besu 还要下载状态。在此期间 beacon 节点处于 optimistic 状态：它跟着链头走，却无法验证区块里的交易。<code>/eth/v1/node/syncing</code> 中的 <code>is_optimistic</code> 为 true。optimistic 的节点不能用来出证明或出块，所以要等 Besu 同步完成。', 'Checkpoint sync brings the beacon node to the head within minutes, but Besu still has to download the state. Meanwhile the beacon node is optimistic: it follows the head but cannot verify the transactions in the blocks. <code>is_optimistic</code> in <code>/eth/v1/node/syncing</code> is true. An optimistic node cannot be used to attest or propose, so wait for Besu to finish.'));
+    }
     const syncing = clUp && ns - Math.floor(E.clHead) > 1;
-    const L = E.lastLog, every = (k, sec) => { if (w.t - (L[k] ?? -1e9) >= sec) { L[k] = w.t; return true; } return false; };
     // besu
     if (running(el) && w.t >= el.readyAt) {
-      if (clUp && !syncing && every('elImp', SPS)) { const h = hx('b' + E.elHead); blog(w, n, el, 'INFO', 'AbstractEngineNewPayload', `Imported #${groupDigits(E.elHead)} / ${120 + (E.elHead % 170)} tx / ${16} ws / base fee ${(0.4 + (E.elHead % 97) / 60).toFixed(2)} gwei / ${groupDigits(14e6 + (E.elHead % 997) * 9001)} (${(39 + (E.elHead % 31)).toFixed(1)}%) gas / (0x${h.slice(0, 4)}...${h.slice(-6)}) in 0.${100 + (E.elHead % 300)}s. Peers: ${E.elPeers}`); }
-      else if (clUp && syncing && every('elBack', 30)) blog(w, n, el, 'INFO', 'BackwardSyncContext', `Backward sync phase 2 of 2, ${Math.min(99.9, 100 * (1 - (ns - E.clHead) / Math.max(1, ns - E.clHead + 50))).toFixed(2)}% completed, imported ${Math.floor(w.t - cl.readyAt) * 2} blocks of at least ${Math.floor(ns - E.clHead) + Math.floor(w.t - cl.readyAt) * 2}. Peers: ${E.elPeers}`);
-      else if (w.t - E.elLastAdv >= 120 && every('elQos', 120)) blog(w, n, el, 'WARN', 'EngineQosTimer', 'Execution engine not called in 120 seconds, consensus client may not be connected');
+      if (clUp && !syncing && !elSyncing(n) && (!E.fresh || elUp) && every('elImp', SPS)) { const h = hx('b' + E.elHead); blog(w, n, el, 'INFO', 'AbstractEngineNewPayload', `Imported #${groupDigits(E.elHead)} / ${120 + (E.elHead % 170)} tx / ${16} ws / base fee ${(0.4 + (E.elHead % 97) / 60).toFixed(2)} gwei / ${groupDigits(14e6 + (E.elHead % 997) * 9001)} (${(39 + (E.elHead % 31)).toFixed(1)}%) gas / (0x${h.slice(0, 4)}...${h.slice(-6)}) in 0.${100 + (E.elHead % 300)}s. Peers: ${E.elPeers}`); }
+      else if (clUp && syncing && !elSyncing(n) && every('elBack', 30)) blog(w, n, el, 'INFO', 'BackwardSyncContext', `Backward sync phase 2 of 2, ${Math.min(99.9, 100 * (1 - (ns - E.clHead) / Math.max(1, ns - E.clHead + 50))).toFixed(2)}% completed, imported ${Math.floor(w.t - cl.readyAt) * 2} blocks of at least ${Math.floor(ns - E.clHead) + Math.floor(w.t - cl.readyAt) * 2}. Peers: ${E.elPeers}`);
+      else if (w.t - E.elLastAdv >= 120 && (!E.fresh || !elUp) && every('elQos', 120)) blog(w, n, el, 'WARN', 'EngineQosTimer', 'Execution engine not called in 120 seconds, consensus client may not be connected');
     }
     // teku beacon
     if (clUp) {
@@ -519,6 +817,8 @@
     const ns = netSlot(w), ch = w.chain;
     Object.values(w.nodes).forEach(n => tickNode(w, n, dt, ns));
     ch.vals.forEach(v => {
+      if (v.fresh) lifecycle(w, v, ns);
+      if (v.next == null) return;
       while (ns >= dutySlot(v, v.next) + 1) { evalDuty(w, v, v.next, dutySlot(v, v.next)); v.next++; }
     });
     // the same key loaded in two running validator clients
@@ -533,7 +833,7 @@
     const E = n.eth, ns = netSlot(w), cl = E.c.cl, el = E.c.el;
     const clUp = ready(w, cl), elUp = elServing(w, n);
     const head = Math.floor(E.clHead), dist = Math.max(0, ns - head);
-    return { ns, head, dist, clUp, elUp, hung: running(cl) && cl.hung, syncing: clUp && dist > 1, optimistic: clUp && dist > 1, elOffline: clUp && !elUp, finalized: ep(head) - 2 };
+    return { ns, head, dist, clUp, elUp, hung: running(cl) && cl.hung, syncing: clUp && dist > 1, optimistic: clUp && (dist > 1 || elSyncing(n)), elOffline: clUp && !elUp, finalized: ep(head) - 2 };
   }
   const attestingFrom = (w, v, hostId) => { const last = v.hist[v.hist.length - 1]; return !!last && last.hit && last.by === hostId && v.slashed == null; };
 
@@ -542,6 +842,7 @@
   const rpc = (id, result) => j(200, { jsonrpc: '2.0', id: id ?? 1, result });
   const refused = (h, p) => ({ error: 7, msg: `Failed to connect to ${h} port ${p} after 0 ms: Couldn't connect to server` });
   function valJson(w, v) {
+    if (v.fresh) return freshValJson(w, v);
     return { index: String(v.index), balance: String(Math.round(v.bal)), status: v.slashed != null ? 'active_slashed' : 'active_ongoing', validator: { pubkey: v.pubkey, withdrawal_credentials: '0x010000000000000000000000' + v.withdrawal, effective_balance: '32000000000', slashed: v.slashed != null, activation_eligibility_epoch: String(v.activation - 7), activation_epoch: String(v.activation), exit_epoch: v.slashed != null ? String(v.slashed + 260) : FAR, withdrawable_epoch: v.slashed != null ? String(v.slashed + 8192) : FAR } };
   }
   async function beaconApi(w, n, req, ctx) {
@@ -570,7 +871,7 @@
       return j(200, { execution_optimistic: opt, finalized: false, data: { previous_justified: cp(ep(V.head) - 2), current_justified: cp(ep(V.head) - 1), finalized: cp(V.finalized) } });
     }
     if ((m = /^\/eth\/v1\/beacon\/states\/(head|finalized)\/validators\/(\w+)$/.exec(p))) {
-      const v = w.chain.vals.find(x => String(x.index) === m[2] || x.pubkey === m[2]);
+      const v = w.chain.vals.find(x => x.index != null && (String(x.index) === m[2] || x.pubkey === m[2]));
       if (!v) return j(404, { code: 404, message: 'Could not find validator' });
       return j(200, { execution_optimistic: opt, finalized: false, data: valJson(w, v) });
     }
@@ -593,11 +894,14 @@
       case 'eth_blockNumber':
         if (V.hung || !V.clUp) S.lesson(w, 'engine', S.LL('执行层由共识层驱动', 'The consensus client drives the execution client'), S.LL('合并之后，执行客户端不再自己决定导入哪个区块。beacon 节点通过 Engine API（<code>engine_newPayload</code>、<code>engine_forkchoiceUpdated</code>，端口 8551，用 JWT 认证）把每个区块交给它。beacon 不再调用，Besu 就停在原来的高度，同时进程、RPC 和对等节点数都显示正常，日志每两分钟打印一次 <code>Execution engine not called in 120 seconds</code>。', 'Since the Merge the execution client no longer decides which block to import. The beacon node hands it every block over the Engine API (<code>engine_newPayload</code>, <code>engine_forkchoiceUpdated</code>, port 8551, authenticated with a JWT). When the beacon stops calling, Besu stays at the same height while its process, RPC and peer count all look healthy, and it logs <code>Execution engine not called in 120 seconds</code> every two minutes.'));
         return rpc(b.id, hex(E.elHead));
-      case 'eth_syncing': return rpc(b.id, V.clUp && V.syncing ? { startingBlock: hex(E.elHead - 50), currentBlock: hex(E.elHead), highestBlock: hex(blockAt(V.ns)) } : false);
+      case 'eth_syncing':
+        // a fresh Besu only learns the chain head from the beacon node; until then it does not know it is behind
+        if (E.fresh) return rpc(b.id, elSyncing(n) && E.clHead > 0 && engineOk(n) ? { startingBlock: '0x0', currentBlock: hex(E.elHead), highestBlock: hex(blockAt(V.ns)), pulledStatesCount: hex(Math.floor(E.elSync.p * 9e6)), knownStatesCount: hex(9e6) } : false);
+        return rpc(b.id, V.clUp && V.syncing ? { startingBlock: hex(E.elHead - 50), currentBlock: hex(E.elHead), highestBlock: hex(blockAt(V.ns)) } : false);
       case 'net_peerCount': return rpc(b.id, hex(E.elPeers));
       case 'web3_clientVersion': return rpc(b.id, `besu/v${el.version}/linux-x86_64/openjdk-java-21`);
-      case 'eth_chainId': return rpc(b.id, '0x1');
-      case 'net_version': return rpc(b.id, '1');
+      case 'eth_chainId': return rpc(b.id, NET.chainId);
+      case 'net_version': return rpc(b.id, NET.netVersion);
       case 'eth_getBlockByNumber': {
         const num = E.elHead, ts = GENESIS + slotOfBlock(num) * SPS;
         return rpc(b.id, { number: hex(num), hash: '0x' + hx('b' + num), parentHash: '0x' + hx('b' + (num - 1)), timestamp: hex(ts), miner: '0x4838b106fce9647bdf1e7877bf73ce8b0bad5f97', gasUsed: hex(14e6 + (num % 997) * 9001), gasLimit: '0x2aea540', baseFeePerGas: hex(4e8 + (num % 97) * 1e7), transactions: [] });
@@ -637,14 +941,17 @@
   async function http(w, host, req, ctx) {
     const local = req.host === 'localhost' || req.host === '127.0.0.1';
     if (req.host === 'checkip.amazonaws.com') return { status: 200, body: (host.ip || '203.0.113.50') + '\n' };
-    if (req.host === 'beaconcha.in' && /^\/api\/v1\/validator\//.test(req.path)) {
+    const dl = download(w, req);
+    if (dl) return dl;
+    if ((req.host === 'beaconcha.in' || (NET.explorer && req.host === NET.explorer)) && /^\/api\/v1\/validator\//.test(req.path)) {
       const m = /^\/api\/v1\/validator\/(\w+)(\/attestations)?$/.exec(req.path);
-      const v = m && w.chain.vals.find(x => String(x.index) === m[1] || x.pubkey === m[1]);
+      const v = m && w.chain.vals.find(x => x.index != null && (String(x.index) === m[1] || x.pubkey === m[1]));
       if (!v) return j(200, { status: 'ERROR: invalid validator argument', data: null });
       if (m[2]) {
         const h = v.hist.slice(-10).reverse();
         return j(200, { status: 'OK', data: h.map(x => ({ attesterslot: dutySlot(v, x.e), committeeindex: (v.index + x.e) % 64, epoch: x.e, inclusionslot: x.hit ? dutySlot(v, x.e) + 1 : 0, status: x.hit ? 1 : 0, validatorindex: v.index })) });
       }
+      if (v.fresh) { const st = statusOf(w, v); return j(200, { status: 'OK', data: { activationeligibilityepoch: v.eligEp, activationepoch: v.activation, balance: Math.round(v.bal), effectivebalance: 32000000000, exitepoch: 9223372036854775807, pubkey: v.pubkey, slashed: v.slashed != null, status: st === 'active_ongoing' ? (v.hist.length && v.hist[v.hist.length - 1].hit ? 'active_online' : 'active_offline') : 'pending', validatorindex: v.index, withdrawableepoch: 9223372036854775807, withdrawalcredentials: '0x010000000000000000000000' + v.withdrawal } }); }
       return j(200, { status: 'OK', data: { activationeligibilityepoch: v.activation - 7, activationepoch: v.activation, balance: Math.round(v.bal), effectivebalance: 32000000000, exitepoch: v.slashed != null ? v.slashed + 260 : 9223372036854775807, pubkey: v.pubkey, slashed: v.slashed != null, status: v.slashed != null ? 'slashed' : 'active_online', validatorindex: v.index, withdrawableepoch: 9223372036854775807, withdrawalcredentials: '0x010000000000000000000000' + v.withdrawal } });
     }
     if (!local || !host.eth) return null;
@@ -895,6 +1202,21 @@
     const pos = ctx.args.filter(x => !x.startsWith('-')), sub = pos[0], units = pos.slice(1);
     const now = ctx.args.includes('--now');
     const isTimer = u => /\.timer$/.test(u);
+    if (n.eth && n.eth.fresh) {
+      discoverUnits(ctx.w, n);
+      if ((sub === 'enable' || sub === 'disable') && !units.some(isTimer)) {
+        if (!ctx.isRoot) return err(`Failed to ${sub} unit: Access denied ${gray(S.L('（需要 root：先 sudo -i，或在命令前加 sudo）', '(needs root: sudo -i first, or prefix with sudo)'))}`);
+        if (!units.length) return err('Too few arguments.');
+        let out = '', code = 0;
+        for (const u of units) {
+          const s = n.services[u.replace(/\.service$/, '')];
+          if (!s) { out += `Failed to ${sub} unit: Unit file ${u.replace(/\.service$/, '')}.service does not exist.\n`; code = 1; continue; }
+          if (sub === 'enable') { if (!s.enabled) out += `Created symlink /etc/systemd/system/multi-user.target.wants/${s.name}.service → ${s.unitPath}.\n`; s.enabled = true; if (now) { const r = ctx.w.net.serviceAction(ctx.w, n, s, 'start', ctx); if (r && r.then) await r; } }
+          else { if (s.enabled) out += `Removed "/etc/systemd/system/multi-user.target.wants/${s.name}.service".\n`; s.enabled = false; if (now) ctx.w.net.serviceAction(ctx.w, n, s, 'stop', ctx); }
+        }
+        return { code, out };
+      }
+    }
     if (sub === 'list-timers') {
       const rows = [];
       if (T && T.active) rows.push([S.fmtDate(new Date(ctx.w.base + T.next * 1000)), `${S.fmtDur(Math.max(0, T.next - ctx.w.t))} left`, S.fmtDate(new Date(ctx.w.base + T.lastRun * 1000)), `${S.fmtDur(ctx.w.t - T.lastRun)} ago`, 'eth-engine-watchdog.timer', 'eth-engine-watchdog.service']);
@@ -969,6 +1291,7 @@
     },
     aws: ctx => {
       const f = ctx.flags, [svc, op] = f._;
+      if (svc === 's3' && ctx.w.chain.fresh) return aws(ctx);
       if (svc === 'sts' && op === 'get-caller-identity') return JSON.stringify({ UserId: 'AROAEXAMPLE7ONCALL:ops', Account: '111122223333', Arn: 'arn:aws:sts::111122223333:assumed-role/oncall-operator/ops' }, null, 4) + '\n';
       if (svc === 'ssm' && op === 'start-session') {
         const n = findNode(ctx.w, f.target);
@@ -990,19 +1313,19 @@
   const nodesOf = w => Object.values(w.nodes);
   const R = (name, severity, forSec, fn) => ({ name, severity, for: forSec, check: w => nodesOf(w).flatMap(n => { const s = fn(w, n, view(w, n)); return s ? [{ instance: n.hostname, summary: s }] : []; }) });
   const rules = [
-    R('EthCollectorScrapeFailing', 'warning', 600, (w, n) => n.services['eth-collector'].state !== 'active' && `eth metrics collector is failing to scrape on ${n.hostname}`),
-    R('EthExecutionDown', 'critical', 120, (w, n) => !ready(w, n.eth.c.el) && w.t - (n.eth.c.el.since ?? 0) > 15 && `Besu execution client is down on ${n.hostname}`),
-    R('EthExecutionStalled', 'critical', 300, (w, n) => ready(w, n.eth.c.el) && w.t - n.eth.elLastAdv >= 600 && `Execution layer has imported no blocks for 10 minutes on ${n.hostname}`),
+    R('EthCollectorScrapeFailing', 'warning', 600, (w, n) => n.services['eth-collector'] && n.services['eth-collector'].state !== 'active' && `eth metrics collector is failing to scrape on ${n.hostname}`),
+    R('EthExecutionDown', 'critical', 120, (w, n) => inst(n, 'el') && !ready(w, n.eth.c.el) && w.t - (n.eth.c.el.since ?? 0) > 15 && `Besu execution client is down on ${n.hostname}`),
+    R('EthExecutionStalled', 'critical', 300, (w, n) => ready(w, n.eth.c.el) && !elSyncing(n) && w.t - n.eth.elLastAdv >= 600 && `Execution layer has imported no blocks for 10 minutes on ${n.hostname}`),
     R('EthWatchdogRecovered', 'warning', 0, (w, n) => n.eth.timer && n.eth.timer.acted != null && `Engine watchdog restarted the consensus client on ${n.hostname}`),
     R('EthWatchdogEscalated', 'critical', 300, (w, n) => n.eth.timer && n.eth.timer.escalated && `Engine watchdog will NOT auto-recover ${n.hostname} - human needed (${n.eth.timer.escalated})`),
     R('EthWatchdogStale', 'warning', 600, (w, n) => n.eth.timer && w.t - n.eth.timer.lastRun > 900 && `Engine watchdog has not run for 15 minutes on ${n.hostname}`),
-    R('EthValidatorClientDown', 'critical', 300, (w, n) => !ready(w, n.eth.c.vc) && n.eth.c.vc.monitored !== false && `Teku validator client is down on ${n.hostname}`),
-    R('EthMevBoostDown', 'warning', 600, (w, n) => !running(n.eth.c.mev) && `mev-boost is down on ${n.hostname}`),
+    R('EthValidatorClientDown', 'critical', 300, (w, n) => inst(n, 'vc') && !ready(w, n.eth.c.vc) && n.eth.c.vc.monitored !== false && `Teku validator client is down on ${n.hostname}`),
+    R('EthMevBoostDown', 'warning', 600, (w, n) => n.eth.c.mev && !running(n.eth.c.mev) && `mev-boost is down on ${n.hostname}`),
     R('EthExecutionNotSynced', 'warning', 900, (w, n, V) => V.clUp && V.optimistic && `Besu is not fully synced on ${n.hostname}`),
     R('EthBeaconSyncing', 'warning', 1800, (w, n, V) => V.clUp && V.syncing && `Teku beacon node is syncing on ${n.hostname}`),
     R('EthBeaconSlotsBehind', 'warning', 600, (w, n, V) => V.clUp && V.dist > 32 && `Teku is more than one epoch behind on ${n.hostname}`),
     R('EthBeaconSlotsSignificantlyBehind', 'critical', 300, (w, n, V) => V.clUp && V.dist > 225 && `Teku is more than one finality period behind on ${n.hostname}`),
-    R('EthHeadSlotStalled', 'critical', 600, (w, n) => w.t - n.eth.clLastAdv >= 900 && w.t - n.eth.headSeenAt < 900 && `Beacon head slot has stopped advancing on ${n.hostname}`),
+    R('EthHeadSlotStalled', 'critical', 600, (w, n) => inst(n, 'cl') && w.t - n.eth.clLastAdv >= 900 && w.t - n.eth.headSeenAt < 900 && `Beacon head slot has stopped advancing on ${n.hostname}`),
     { name: 'EthValidatorEfficiencyLow', severity: 'critical', for: 1800, check: w => w.chain.vals.filter(v => efficiency(v) < 93).map(v => ({ instance: v.lastSigner || v.home, summary: `Ethereum validator efficiency ${efficiency(v).toFixed(1)}% - eth index ${v.index} on ${v.lastSigner || v.home}` })) },
   ];
 
@@ -1014,13 +1337,15 @@
     },
     update(el, w) {
       const L = S.L, ns = netSlot(w), e = ep(ns), idx = ns % SPE;
-      el.querySelector('.mech-head').innerHTML = `<span class="mh-k">mainnet · epoch ${e.toLocaleString('en-US')}</span><span class="mh-v">slot ${idx + 1}/32</span><span class="mh-s">${L('网络 head', 'network head')} ${ns.toLocaleString('en-US')} · ${L('已最终确定', 'finalized')} epoch ${(e - 2).toLocaleString('en-US')}</span>`;
-      const duties = new Set(w.chain.vals.map(v => dutySlot(v, e) % SPE));
+      el.querySelector('.mech-head').innerHTML = `<span class="mh-k">${NET.name} · epoch ${e.toLocaleString('en-US')}</span><span class="mh-v">slot ${idx + 1}/32</span><span class="mh-s">${L('网络 head', 'network head')} ${ns.toLocaleString('en-US')} · ${L('已最终确定', 'finalized')} epoch ${(e - 2).toLocaleString('en-US')}</span>`;
+      const duties = new Set(w.chain.vals.filter(v => v.next != null).map(v => dutySlot(v, e) % SPE));
       el.querySelector('.eth-clock').innerHTML = Array.from({ length: SPE }, (_, i) => cell(i < idx ? 'var(--line-2)' : i === idx ? 'var(--blue)' : 'var(--panel-3)', `slot ${e * SPE + i}`, duties.has(i) ? 'box-shadow:inset 0 -4px 0 var(--amber)' : '')).join('');
       el.querySelector('.eth-nodes').innerHTML = Object.values(w.nodes).map(n => {
         const E = n.eth, V = view(w, n), cl = E.c.cl, el2 = E.c.el, vc = E.c.vc;
         let st, cls;
-        if (!cl || cl.removed || cl.state === 'exited' || cl.state === 'inactive' || cl.state === 'failed') { st = L('beacon 已停止', 'beacon stopped'); cls = 'bad'; }
+        if (E.fresh && !inst(n, 'cl') && !(cl && cl.state === 'activating')) { st = L('beacon 未安装', 'beacon not installed'); cls = 'warn'; }
+        else if (E.fresh && V.clUp && !V.elOffline && !V.syncing && elSyncing(n)) { st = L(`Besu 同步中 ${Math.floor(E.elSync.p * 100)}%`, `Besu syncing ${Math.floor(E.elSync.p * 100)}%`); cls = 'warn'; }
+        else if (!cl || cl.removed || cl.state === 'exited' || cl.state === 'inactive' || cl.state === 'failed') { st = L('beacon 已停止', 'beacon stopped'); cls = 'bad'; }
         else if (cl.state === 'restarting' || cl.state === 'activating' || cl.crashAt != null) { st = L(`beacon 反复崩溃 ×${cl.restarts}`, `beacon crash loop ×${cl.restarts}`); cls = 'bad'; }
         else if (cl.hung) { st = L('beacon 无响应', 'beacon hung'); cls = 'bad'; }
         else if (!V.clUp) { st = L('beacon 启动中', 'beacon starting'); cls = 'warn'; }
@@ -1028,15 +1353,18 @@
         else if (V.syncing) { st = L(`追赶中，落后 ${V.dist} slot`, `catching up, ${V.dist} slots behind`); cls = 'warn'; }
         else { st = L('已同步', 'in sync'); cls = 'ok'; }
         const elStall = Math.round(w.t - E.elLastAdv);
-        const vcSt = !running(vc) ? (vc && vc.state === 'failed' ? 'failed' : L('已停止', 'stopped')) : w.t < vc.readyAt ? L('启动中', 'starting') : vc.dopEnd != null ? L(`doppelganger 检测，剩 ${Math.max(0, vc.dopEnd - ns)} slot`, `doppelganger wait, ${Math.max(0, vc.dopEnd - ns)} slots`) : L(`${(vc.keys || []).length} 把钥匙`, `${(vc.keys || []).length} key(s)`);
+        const vcSt = E.fresh && !vc ? L('未安装', 'not installed') : !running(vc) ? (vc && vc.state === 'failed' ? 'failed' : L('已停止', 'stopped')) : w.t < vc.readyAt ? L('启动中', 'starting') : vc.dopEnd != null ? L(`doppelganger 检测，剩 ${Math.max(0, vc.dopEnd - ns)} slot`, `doppelganger wait, ${Math.max(0, vc.dopEnd - ns)} slots`) : L(`${(vc.keys || []).length} 把钥匙`, `${(vc.keys || []).length} key(s)`);
         return `<div class="avx-node ${cls}">
           <div class="an-top"><b>${n.id}</b><span class="an-reg">${E.stack === 'stereum' ? 'Stereum · docker' : 'systemd'}</span><span class="pill ${cls}">${st}</span></div>
-          <div class="an-row"><span>EL besu ${el2.version}</span><b class="mono ${ready(w, el2) ? (elStall >= 120 ? 'warnc' : '') : 'badc'}">${ready(w, el2) ? '#' + E.elHead.toLocaleString('en-US') : L('离线', 'down')}</b><span>${L('上次导入', 'last import')}</span><b class="mono ${elStall >= 120 ? 'badc' : ''}">${elStall < 24 ? L('刚刚', 'just now') : S.fmtDur(elStall) + L('前', ' ago')}</b></div>
+          <div class="an-row"><span>EL besu ${el2 ? el2.version : ''}</span><b class="mono ${ready(w, el2) ? (elStall >= 120 ? 'warnc' : '') : 'badc'}">${ready(w, el2) ? '#' + E.elHead.toLocaleString('en-US') : E.fresh && !inst(n, 'el') ? L('未安装', 'not installed') : L('离线', 'down')}</b><span>${L('上次导入', 'last import')}</span><b class="mono ${elStall >= 120 ? 'badc' : ''}">${E.fresh && !E.elHead ? '—' : elStall < 24 ? L('刚刚', 'just now') : S.fmtDur(elStall) + L('前', ' ago')}</b></div>
           <div class="an-row"><span>CL teku ${cl ? cl.version : ''}</span><b class="mono">${V.clUp ? 'slot ' + V.head.toLocaleString('en-US') : '—'}</b><span>${L('落后', 'behind')}</span><b class="mono ${V.clUp && V.dist > 32 ? 'badc' : ''}">${V.clUp ? V.dist + ' slot' : '?'}</b></div>
           <div class="an-row"><span>VC</span><b class="mono ${running(vc) ? '' : 'badc'}">${vcSt}</b><span>${L('已最终确定', 'finalized')}</span><b class="mono">${V.clUp ? 'epoch ' + V.finalized.toLocaleString('en-US') : '?'}</b></div>
         </div>`;
       }).join('');
-      el.querySelector('.eth-vals').innerHTML = w.chain.vals.map(v => {
+      if (w.chain.fresh && !w.chain.vals.length) el.querySelector('.eth-vals').innerHTML = `<div class="avx-node warn"><div class="an-top"><b>${L('验证者', 'validator')}</b><span class="pill warn">${L('尚未存款', 'no deposit yet')}</span></div></div>`;
+      else el.querySelector('.eth-vals').innerHTML = w.chain.vals.map(v => {
+        const vs = statusOf(w, v);
+        if (v.fresh && vs !== 'active_ongoing' && vs !== 'active_slashed') return `<div class="avx-node warn"><div class="an-top"><b>${L('验证者', 'validator')} ${v.index ?? ''}</b><span class="an-reg mono">${short(v.pubkey)}</span><span class="pill warn">${vs || L('存款已上链，等待处理', 'deposit on chain, not processed yet')}</span></div><div class="an-row"><span>${L('激活 epoch', 'activation epoch')}</span><b class="mono">${v.activation.toLocaleString('en-US')}</b><span>${L('还需', 'in')}</span><b class="mono">${S.fmtDur(Math.max(0, (v.activation * SPE + GENESIS / SPS) * SPS - w.now() / 1000))}</b></div></div>`;
         const recent = v.hist.slice(-15);
         const cells = recent.map(x => cell(x.slashed ? '#b36bff' : x.hit ? 'var(--lime)' : 'var(--red)', `epoch ${x.e}: ${x.slashed ? 'slashed' : x.hit ? 'included' + (x.by ? ' · ' + x.by : '') : 'missed'}`)).join('') + cell('var(--panel-3)', `epoch ${v.next}: ${L('待执行', 'pending')}`, 'outline:1px dashed var(--line-2)');
         const eff = efficiency(v), d = (v.bal - v.bal0) / 1e9;
@@ -1058,6 +1386,7 @@
   const HOSTS = {
     'eth-01': { id: 'eth-01', instanceId: 'i-0d4e6f8a0b2c4e6f1', region: 'us-west-2', ip: '198.51.100.31', stack: 'stereum' },
     'eth-02': { id: 'eth-02', instanceId: 'i-0e5f7a9b1c3d5e7f2', region: 'us-west-2', ip: '198.51.100.32', stack: 'systemd' },
+    'eth-new': { id: 'eth-new', instanceId: 'i-0a7c3e9f1b5d2e4c8', region: 'us-west-2', ip: '198.51.100.47', stack: 'systemd', fresh: true },
   };
   const VAL = { index: 1234567, pubkey: '0x8a1f3c5e7b9d2f4a6c8e0b1d3f5a7c9e1b3d5f7a9c0e2b4d6f8a1c3e5b7d9f0a2c4e6b8d0f1a3c5e7b9d2f4a6c8e0b1d', withdrawal: '7f3a9c1e5b2d8f4a6c0e9b7d3f1a5c8e2b4d6f90', activation: 298114 };
 
@@ -1065,12 +1394,15 @@
     id: 'ethereum', name: 'Ethereum', color: '#7cc4ff', logo: LOGO,
     desc: S.LL('Besu 与 Teku 验证者：slot 与 epoch、Engine API 把共识层和执行层连在一起、证明任务与效率、同步与追赶、slashing 保护与钥匙迁移。', 'Besu and Teku validators: slots and epochs, the Engine API that links the consensus and execution clients, attestation duties and efficiency, sync and catch-up, slashing protection and moving a key.'),
     init(w, cfg) {
+      useNet(cfg.network);
       w.chain = { vals: [], s3: {}, hitsLab: 0, missLab: 0 };
+      if (cfg.fresh) Object.assign(w.chain, { fresh: true, keyTs: cfg.keyTs, wallet: cfg.wallet, planIndex: cfg.planIndex, keygen: {}, deposits: {} });
       (cfg.hosts || []).forEach(hc => {
-        const sp = Object.assign({}, HOSTS[hc.id], hc);
+        const sp = Object.assign({}, HOSTS[hc.id], hc, cfg.fresh ? { wallet: cfg.wallet } : {});
         w.nodes[sp.id] = makeNode(w, sp);
-        boot(w, w.nodes[sp.id], sp);
+        if (!sp.fresh) boot(w, w.nodes[sp.id], sp);
       });
+      if (cfg.fresh) return;   // a new install: the validator only exists after the operator's deposit
       const ns = netSlot(w), e0 = ep(ns);
       const v = Object.assign({ hist: [], everSigned: true, home: cfg.keyOn, lastSigner: cfg.keyOn }, VAL);
       v.bal = v.bal0 = 32004137112;
@@ -1148,6 +1480,7 @@
     helpers: {
       view, efficiency, attestingFrom, running, ready, netSlot, ep, keysOnDisk, spGet: (w, n, pk) => spGet(w, n, vcData(n), pk), clPorts, parseSvcYaml, svcYamlPath,
       portsOf, preLog, tekuLine, besuLine, tsAt, blockAt, hx, dutySlot,
+      engineOk, elSyncing, fwOpen, statusOf, keyFor, depositCli, launchpad, net: () => NET,
       val: w => w.chain.vals[0], lastEntry: w => { const v = w.chain.vals[0]; return v.hist[v.hist.length - 1]; },
     },
   });

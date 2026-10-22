@@ -40,10 +40,11 @@
     meter(pct, cls, marks = []) {
       return `<div class="wg-meter ${cls || ''}"><i style="width:${Math.max(0, Math.min(100, pct))}%"></i>${marks.map(([p, l]) => `<em style="left:${p}%" title="${l || ''}"></em>`).join('')}</div>`;
     },
-    // requestAnimationFrame loop; fn(dtSeconds, elapsedSeconds). Returns stop().
+    // requestAnimationFrame loop; fn(dtSeconds, elapsedSeconds). Returns stop(). The first frame's timestamp can precede
+    // performance.now() at setup, so dt is clamped at 0.
     loop(fn) {
       let on = true, last = performance.now(), t0 = last;
-      const f = now => { if (!on) return; const dt = Math.min(0.1, (now - last) / 1000); last = now; fn(dt, (now - t0) / 1000); requestAnimationFrame(f); };
+      const f = now => { if (!on) return; const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); last = now; fn(dt, (now - t0) / 1000); requestAnimationFrame(f); };
       requestAnimationFrame(f);
       const stop = () => { on = false; };
       stops.push(stop);

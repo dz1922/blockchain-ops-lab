@@ -1,9 +1,10 @@
 /* ============================================================
-   Solana, steps 1 and 2.
+   Solana, steps 1 and 2, for the cluster as it runs today (Alpenglow).
    Step 1: "Solana fundamentals for validator operators", seven
    chapters with widgets and quizzes.
    Step 2: lab R1, a guided build of a testnet validator on a new
-   Ubuntu host (the plugin's cfg.fresh mode).
+   Ubuntu host (the plugin's cfg.fresh mode), through BLS
+   registration, the admission ticket and the first epoch in the set.
    ============================================================ */
 (function (S) {
   'use strict';
@@ -13,7 +14,7 @@
   const cap = (el, zh, en) => el.appendChild(E('div', 'wg-cap', L(zh, en)));
   const fmt = (v, d = 2) => Number(v).toLocaleString('en-US', { maximumFractionDigits: d, minimumFractionDigits: d });
   const dur = sec => (sec === Infinity ? '∞' : sec >= 86400 * 2 ? L(`${fmt(sec / 86400, 1)} 天`, `${fmt(sec / 86400, 1)} days`) : sec >= 3600 ? L(`${fmt(sec / 3600, 1)} 小时`, `${fmt(sec / 3600, 1)} h`) : sec >= 60 ? L(`${fmt(sec / 60, 1)} 分钟`, `${fmt(sec / 60, 1)} min`) : L(`${fmt(sec, 1)} 秒`, `${fmt(sec, 1)} s`));
-  const EPOCH = 432000;
+  const EPOCH = 432000, TICKET = 0.8, RENT = 0.02685864, ADMIT = TICKET + RENT;
   const C = { lime: '#b6f23a', amber: '#f5a623', red: '#ff6b57', blue: '#7cc4ff', ink2: '#b9c7b4', ink3: '#7f9180', line: '#34413a', panel: '#161e1a', bg: '#0b0f0d' };
 
   /* ---------- chapter widgets ---------- */
@@ -25,8 +26,8 @@
     const WEIGHT = [22, 18, 15, 13, 11, 9, 4], COL = ['#7cc4ff', '#f5a623', '#c792ea', '#ff8a7a', '#5fd3bc', '#e6db74', C.lime];
     const hash = (a, b) => { let h = (Math.imul(a, 2654435761) ^ Math.imul(b, 40503)) >>> 0; h = Math.imul(h ^ (h >>> 15), 2246822507) >>> 0; h = Math.imul(h ^ (h >>> 13), 3266489909) >>> 0; return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
     const leader = s => { const r = hash(Math.floor(s / 4), Math.floor(s / EPOCH) + 11); let acc = 0; for (let i = 0; i < 7; i++) { acc += WEIGHT[i] / 92; if (r < acc) return i; } return 6; };
-    let slotMs = 400, speed = 1, s = 724 * EPOCH + 429600, msg = '';
-    S.wg.buttons(el, [[L('slot 时长 400 ms', 'slot time 400 ms'), () => { slotMs = 400; }], [L('slot 时长 200 ms', 'slot time 200 ms'), () => { slotMs = 200; }]], { toggle: true });
+    let slotMs = 200, speed = 1, s = 1124 * EPOCH + 429600, msg = '';
+    S.wg.buttons(el, [[L('现在：200 ms', 'today: 200 ms'), () => { slotMs = 200; }], [L('2026 年之前：400 ms', 'before 2026: 400 ms'), () => { slotMs = 400; }]], { toggle: true });
     const SPEEDS = [1, 10, 100, 1000, 10000];
     S.wg.slider(el, { label: L('速度', 'Speed'), min: 0, max: 4, value: 0, fmt: v => `${SPEEDS[v]}×` }, v => { speed = SPEEDS[v]; });
     const svg = E('div'); el.appendChild(svg);
@@ -58,7 +59,7 @@
     S.wg.loop(dt => {
       const before = Math.floor(s / EPOCH);
       s += dt * 1000 / slotMs * speed;
-      if (Math.floor(s / EPOCH) !== before) msg = L(`epoch ${Math.floor(s / EPOCH)} 开始。它的 leader 表在上一个 epoch 就已按质押算好，质押变动也在此刻生效。`, `Epoch ${Math.floor(s / EPOCH)} began. Its leader schedule was computed from stake during the previous epoch, and stake changes take effect now.`);
+      if (Math.floor(s / EPOCH) !== before) msg = L(`epoch ${Math.floor(s / EPOCH)} 开始。它的 leader 表在上一个 epoch 就已按质押算好；质押变动在此刻生效，各 vote account 也在此刻支付准入费。`, `Epoch ${Math.floor(s / EPOCH)} began. Its leader schedule was computed from stake during the previous epoch. Stake changes take effect now, and each vote account pays its admission ticket now.`);
       draw();
     });
     draw();
@@ -68,19 +69,20 @@
   function keyMap(el) {
     title(el);
     const BOX = {
-      id: [24, 46, 172, 46, L('identity keypair', 'identity keypair'), L('常驻服务器', 'always on the server')],
+      id: [24, 46, 172, 46, L('identity keypair', 'identity keypair'), L('签名；BLS 公钥由它派生', 'signs; BLS key derived')],
       vkp: [24, 130, 172, 46, L('vote account keypair', 'vote account keypair'), L('只在创建时用一次', 'used once, at creation')],
-      vacct: [236, 46, 168, 46, L('vote account', 'vote account'), L('投票、credits、佣金', 'votes, credits, commission')],
-      iacct: [236, 130, 168, 46, L('identity 账户', 'identity account'), L('余额：付手续费', 'balance: pays fees')],
+      vacct: [236, 46, 168, 46, L('vote account', 'vote account'), L('准入费、credits、佣金', 'ticket, credits, commission')],
+      iacct: [236, 130, 168, 46, L('identity 账户', 'identity account'), L('出块收入、交易手续费', 'block revenue, tx fees')],
       wd: [444, 46, 172, 46, L('authorized withdrawer', 'authorized withdrawer'), L('离线保存', 'kept offline')],
     };
     const ACT = [
-      [L('签一票', 'Sign a vote'), ['id'], ['vacct'], L('identity 默认就是 vote authority，用它签名的投票记入 vote account。', 'The identity is the default vote authority. Votes it signs are recorded in the vote account.')],
-      [L('付投票手续费', 'Pay vote fees'), ['id'], ['iacct'], L('手续费从 identity 账户的余额里扣。余额为零时，投票交易无法上链。', 'Fees come out of the identity account. At zero balance, vote transactions cannot land.')],
-      [L('出块', 'Produce a block'), ['id'], ['iacct'], L('轮到 leader 时用 identity 签名出块。块里的交易费默认进入 identity 账户。', 'As leader, the identity signs the block. Transaction fees from it go to the identity account by default.')],
-      [L('创建 vote account', 'Create the vote account'), ['vkp', 'id'], ['vacct'], L('需要新账户的 keypair 和 identity 共同签名。这是 vote account keypair 唯一一次签名。', 'Needs the new account\'s keypair and the identity. This is the only thing the vote account keypair ever signs.')],
-      [L('修改佣金', 'Change commission'), ['wd'], ['vacct'], L('只有 withdrawer 能改佣金。谁持有它，谁就决定这台验证者的收入怎么分。', 'Only the withdrawer can change the commission. Whoever holds it decides how the validator\'s income is split.')],
-      [L('从 vote account 取款', 'Withdraw from the vote account'), ['wd'], ['vacct'], L('佣金累积在 vote account 里，只有 withdrawer 能把它转走。', 'Commission accumulates in the vote account. Only the withdrawer can move it.')],
+      [L('发出一票', 'Send a vote'), ['id'], ['vacct'], L('identity 默认就是 authorized voter。投票是直接发给其他验证者的消息，不是交易，不付手续费。许多验证者的票用 BLS 签名聚合成一张证书。', 'The identity is the default authorized voter. A vote is a message sent straight to other validators, not a transaction, and it pays no fee. Votes from many validators are aggregated into one certificate with BLS signatures.')],
+      [L('登记 BLS 公钥', 'Register the BLS key'), ['id'], ['vacct'], L('vote-authorize-voter-checked 由 authorized voter 签名，把由它派生的 BLS 公钥写进 vote account，voter 本身不变。', 'vote-authorize-voter-checked, signed by the authorized voter, writes the BLS key derived from it into the vote account. The voter itself does not change.')],
+      [L('支付准入费', 'Pay the admission ticket'), [], ['vacct'], L('没有人签名。每到 epoch 边界，运行时直接从 vote account 扣除准入费。', 'Nobody signs. At every epoch boundary the runtime debits the ticket from the vote account.')],
+      [L('给 vote account 充值', 'Refill the vote account'), ['id'], ['vacct'], L('一笔普通转账，任何钥匙都可以付款。运维常从 identity 转。', 'A plain transfer, which any key can pay for. Operators often send from the identity.')],
+      [L('出块', 'Produce a block'), ['id'], ['iacct'], L('轮到 leader 时用 identity 签名出块。出块收入默认进入 identity 账户，也可以改为进入 vote account。', 'As leader, the identity signs the block. Block revenue goes to the identity account by default, and can be redirected to the vote account.')],
+      [L('修改佣金', 'Change commission'), ['wd'], ['vacct'], L('只有 withdrawer 能改佣金，而且只能在 epoch 的前半段改。', 'Only the withdrawer can change the commission, and only in the first half of an epoch.')],
+      [L('从 vote account 取款', 'Withdraw from the vote account'), ['wd'], ['vacct'], L('只有 withdrawer 能把钱取出。取得太多，下一个边界就付不起准入费。', 'Only the withdrawer can take SOL out. Take too much, and the next boundary finds the ticket unpaid.')],
       [L('换一个 identity', 'Assign a new identity'), ['wd'], ['vacct'], L('vote-update-validator 需要 withdrawer（和新 identity）签名。identity 泄露后就靠它换掉。', 'vote-update-validator needs the withdrawer (and the new identity). This is how a leaked identity is replaced.')],
     ];
     const HIT = [
@@ -113,127 +115,135 @@
     draw();
   }
 
-  // 3. vote cost: identity burn under Tower BFT, or a flat per-epoch fee from the vote account
-  function voteCost(el) {
+  // 3. Votor: stake that votes in time decides each slot: fast finalisation, the slow path, or a skip certificate
+  function votor(el) {
     title(el);
-    let mode = 'tower', balance = 12, rate = 100, sigs = 1, slotMs = 400, fee = 0.8;
-    S.wg.buttons(el, [[L('Tower BFT：按票付费', 'Tower BFT: fee per vote'), () => { mode = 'tower'; draw(); }], [L('Alpenglow：按 epoch 固定费用', 'Alpenglow: flat fee per epoch'), () => { mode = 'alpen'; draw(); }]], { toggle: true });
-    S.wg.slider(el, { label: L('余额（SOL）', 'Balance (SOL)'), min: 0, max: 40, step: 0.5, value: balance, fmt: v => `◎${v}` }, v => { balance = v; draw(); });
-    S.wg.slider(el, { label: L('有投票的 slot 比例', 'Slots with a vote'), min: 50, max: 100, value: rate, fmt: v => `${v}%` }, v => { rate = v; draw(); });
-    S.wg.slider(el, { label: L('Alpenglow 每 epoch 费用', 'Alpenglow fee per epoch'), min: 0.2, max: 2, step: 0.1, value: fee, fmt: v => `◎${fmt(v, 1)}` }, v => { fee = v; draw(); });
-    S.wg.buttons(el, [[L('每票 1 个签名', '1 signature per vote'), () => { sigs = 1; draw(); }], [L('每票 2 个签名（单独的 vote authority）', '2 signatures (separate vote authority)'), () => { sigs = 2; draw(); }]], { toggle: true });
-    S.wg.buttons(el, [['400 ms slots', () => { slotMs = 400; draw(); }], ['200 ms slots', () => { slotMs = 200; draw(); }]], { toggle: true });
-    const st = S.wg.stats(el), chart = E('div'), note = E('div', 'wg-cap');
-    el.appendChild(chart); el.appendChild(note);
-    function draw() {
-      if (!chart.isConnected && !el.contains(chart)) return;
-      const slotsDay = 86400 / (slotMs / 1000), epochsDay = slotsDay / EPOCH;
-      const perDay = mode === 'tower' ? slotsDay * rate / 100 * 5000 * sigs / 1e9 : fee * epochsDay;
-      const days = perDay > 0 ? balance / perDay : Infinity;
-      st.set(mode === 'tower' ? [
-        [L('每票手续费', 'Fee per vote'), `${(5000 * sigs).toLocaleString('en-US')} lamports`, ''],
-        [L('每天投票数', 'Votes per day'), Math.round(slotsDay * rate / 100).toLocaleString('en-US'), ''],
-        [L('每天花费', 'Cost per day'), `◎${fmt(perDay, 3)}`, perDay > 1.5 ? 'mid' : ''],
-        [L('余额可用', 'Balance lasts'), dur(days * 86400), days < 3 ? 'bad' : days < 7 ? 'mid' : 'good'],
-        [L('降到 5 SOL 还剩', 'Reaches 5 SOL in'), balance > 5 ? dur((balance - 5) / perDay * 86400) : L('已低于', 'already below'), balance > 8 ? '' : 'bad'],
-      ] : [
-        [L('每 epoch 费用', 'Fee per epoch'), `◎${fmt(fee, 1)}`, ''],
-        [L('每天 epoch 数', 'Epochs per day'), fmt(epochsDay, 2), ''],
-        [L('每天花费（vote account）', 'Cost per day (vote account)'), `◎${fmt(perDay, 3)}`, ''],
-        [L('identity 的投票费用', 'Identity vote fees'), '◎0', 'good'],
-        [L('vote account 余额可用', 'Vote account balance lasts'), dur(days * 86400), days < 3 ? 'bad' : days < 7 ? 'mid' : 'good'],
-      ]);
-      const W = 600, H = 150, X = d => 40 + d / 30 * (W - 60), top = Math.max(10, balance), Y = b => 14 + (1 - b / top) * (H - 40);
-      const end = Math.min(30, days), pts = `${X(0)},${Y(balance)} ${X(end)},${Y(Math.max(0, balance - perDay * end))}${days < 30 ? ` ${X(30)},${Y(0)}` : ''}`;
-      const th = mode === 'tower' ? [[8, C.amber, L('预警 8', 'warn 8')], [5, C.red, L('严重 5', 'crit 5')]].filter(t => t[0] <= top).map(([b, c, t]) => `<line x1="40" x2="${W - 20}" y1="${Y(b)}" y2="${Y(b)}" stroke="${c}" stroke-dasharray="4 4" stroke-width="1"/><text x="${W - 18}" y="${Y(b) + 4}" font-size="10" fill="${c}" text-anchor="end" dy="-6">${t}</text>`).join('') : '';
-      chart.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="balance over time"><line x1="40" x2="${W - 20}" y1="${Y(0)}" y2="${Y(0)}" stroke="${C.line}"/><line x1="40" x2="40" y1="10" y2="${Y(0)}" stroke="${C.line}"/>${th}
-        <polyline points="${pts}" fill="none" stroke="${C.lime}" stroke-width="2.5"/>${days <= 30 ? `<circle cx="${X(days)}" cy="${Y(0)}" r="4" fill="${C.red}"/>` : ''}
-        ${[0, 10, 20, 30].map(d => `<text x="${X(d)}" y="${H - 6}" font-size="10" text-anchor="middle">${L(`${d} 天`, `day ${d}`)}</text>`).join('')}<text x="34" y="${Y(top) + 4}" font-size="10" text-anchor="end">◎${fmt(top, 0)}</text><text x="34" y="${Y(0) + 4}" font-size="10" text-anchor="end">0</text></svg>`;
-      note.textContent = mode === 'tower'
-        ? L('identity 余额按天匀速下降。告警按"还能撑几天"设置，留出处理时间。', 'The identity balance falls at a steady daily rate. Set alerts in days of runway so there is time to act.')
-        : L('Alpenglow 下投票不是交易，"有投票的 slot 比例"和签名数不影响费用。这里的余额指 vote account 中超出免租金额的部分，费用值以集群当前参数为准。', 'Under Alpenglow, votes are not transactions, so the vote share and the signature count do not change the cost. Balance here means the vote account balance above its rent-exempt minimum. Check the cluster\'s current fee.');
-    }
-    draw();
-  }
-
-  // 4. Tower BFT: push votes, watch lockouts double, measure the cost of switching forks
-  function tower(el) {
-    title(el);
-    const MAX = 31;
-    let votes, root, cur, depth = 3, auto = null;
-    const reset = () => { votes = []; root = null; cur = 1000; };
-    reset();
-    const lockout = v => 2 ** v.conf, until = v => v.slot + lockout(v);
-    const vote = () => {
-      const s = cur;
-      while (votes.length && until(votes[votes.length - 1]) < s) votes.pop();
-      if (votes.length === MAX) root = votes.shift().slot;
-      votes.push({ slot: s, conf: 1 });
-      const n = votes.length;
-      votes.forEach((v, i) => { if (n > i + v.conf) v.conf++; });
-      cur = s + 1;
+    let yes = 92, off = 3, cur = 5000, hist = [], downLeft = 0, auto = null;
+    const COL = { fast: C.lime, slow: C.amber, skip: C.red, wait: C.ink3 };
+    const LBL = { fast: L('快速终结', 'fast final'), slow: L('慢路径终结', 'slow final'), skip: L('skip 证书', 'skip cert'), wait: L('无证书', 'no cert') };
+    const outcome = (y, o, leaderDown) => {
+      const online = 100 - o, notar = leaderDown ? 0 : Math.min(y, online), skip = online - notar;
+      const r = notar >= 80 ? 'fast' : notar >= 60 ? (online >= 60 ? 'slow' : 'wait') : skip >= 60 ? 'skip' : 'wait';
+      return { notar, skip, online, r };
     };
+    const step = () => {
+      const down = downLeft > 0;
+      const o = outcome(yes, off, down);
+      hist.push({ slot: cur, r: o.r, down }); if (hist.length > 16) hist.shift();
+      cur++; if (down) downLeft--;
+      draw();
+    };
+    S.wg.slider(el, { label: L('按时投票支持这个块的质押', 'Stake voting for the block in time'), min: 0, max: 100, value: yes, fmt: v => `${v}%` }, v => { yes = v; draw(); });
+    S.wg.slider(el, { label: L('离线的质押', 'Stake offline'), min: 0, max: 40, value: off, fmt: v => `${v}%` }, v => { off = v; draw(); });
     S.wg.buttons(el, [
-      [L('投下一个 slot', 'Vote next slot'), () => { vote(); draw(); }],
-      [L('跳过 4 个 slot 不投', 'Skip 4 slots'), () => { cur += 4; draw(); }],
-      [L('自动投票', 'Auto-vote'), b => { if (auto) { auto(); auto = null; b.classList.remove('on'); } else { auto = S.wg.every(350, () => { vote(); draw(); }); b.classList.add('on'); } }],
-      [L('重来', 'Reset'), () => { reset(); draw(); }],
+      [L('下一个 slot', 'Next slot'), () => step()],
+      [L('自动', 'Auto'), b => { if (auto) { auto(); auto = null; b.classList.remove('on'); } else { auto = S.wg.every(500, step); b.classList.add('on'); } }],
+      [L('leader 离线（4 个 slot）', 'Leader offline (4 slots)'), () => { downLeft = 4; draw(); }],
+      [L('重来', 'Reset'), () => { hist = []; cur = 5000; downLeft = 0; draw(); }],
     ]);
-    S.wg.slider(el, { label: L('另一个分叉从最近几票之下分出', 'Other fork splits below your last N votes'), min: 1, max: 31, value: 3, fmt: v => String(v) }, v => { depth = v; draw(); });
     const svg = E('div'), st = S.wg.stats(el), note = E('div', 'wg-cap');
     el.insertBefore(svg, st.el); el.appendChild(note);
     function draw() {
-      const n = votes.length, k = Math.min(depth, n);
-      const show = votes.slice(-12).reverse(), maxLog = 32;
+      if (!el.contains(svg)) return;
+      const o = outcome(yes, off, downLeft > 0);
+      const W = 600, bw = W / 16;
       let g = '';
-      show.forEach((v, i) => {
-        const y = 6 + i * 17, idx = n - 1 - i, onFork = idx >= n - k, w = 20 + v.conf / maxLog * 360, expired = until(v) < cur;
-        g += `<rect x="150" y="${y}" width="${w}" height="12" rx="3" fill="${onFork ? C.amber : C.lime}" opacity="${expired ? 0.25 : 0.85}"/><text x="8" y="${y + 10}" font-size="10">slot ${v.slot}</text><text x="78" y="${y + 10}" font-size="10">conf ${v.conf}</text><text x="${158 + w}" y="${y + 10}" font-size="10">${(2 ** v.conf).toLocaleString('en-US')} ${L('个 slot，至', 'slots, until')} ${until(v).toLocaleString('en-US')}</text>`;
+      hist.forEach((h, i) => {
+        g += `<rect x="${i * bw + 2}" y="20" width="${bw - 4}" height="30" rx="4" fill="${COL[h.r]}" opacity="${h.r === 'fast' ? 0.8 : 1}"/><text x="${i * bw + bw / 2}" y="40" font-size="10" text-anchor="middle" fill="${C.bg}">${h.r === 'fast' ? 'F' : h.r === 'slow' ? 'S' : h.r === 'skip' ? 'K' : '…'}</text><text x="${i * bw + bw / 2}" y="64" font-size="9" text-anchor="middle">${h.slot % 1000}</text>${h.down ? `<text x="${i * bw + bw / 2}" y="13" font-size="9" text-anchor="middle" fill="${C.red}">${L('离线', 'down')}</text>` : ''}`;
       });
-      if (n > 12) g += `<text x="8" y="${6 + 12 * 17 + 10}" font-size="10" fill="${C.ink3}">… ${L(`下面还有 ${n - 12} 票`, `${n - 12} older votes below`)}</text>`;
-      if (!n) g += `<text x="8" y="16" font-size="11" fill="${C.ink3}">${L('还没有投票。点"投下一个 slot"。', 'No votes yet. Press "Vote next slot".')}</text>`;
-      svg.innerHTML = `<svg viewBox="0 0 640 ${Math.max(40, Math.min(n, 12) * 17 + (n > 12 ? 22 : 8))}" role="img" aria-label="vote tower">${g}</svg>`;
-      const fork = votes.slice(n - k), earliest = fork.length ? Math.max(...fork.map(until)) + 1 : cur, wait = Math.max(0, earliest - cur);
+      if (!hist.length) g += `<text x="8" y="40" font-size="11" fill="${C.ink3}">${L('还没有 slot。点"下一个 slot"或"自动"。', 'No slots yet. Press "Next slot" or "Auto".')}</text>`;
+      // the vote bar for the next slot: notarize | skip | offline, with the 60% and 80% lines
+      const X = p => 4 + p / 100 * (W - 8);
+      g += `<rect x="${X(0)}" y="78" width="${X(o.notar) - X(0)}" height="14" fill="${C.lime}" opacity=".8"/><rect x="${X(o.notar)}" y="78" width="${X(o.notar + o.skip) - X(o.notar)}" height="14" fill="${C.red}" opacity=".7"/><rect x="${X(o.online)}" y="78" width="${X(100) - X(o.online)}" height="14" fill="${C.line}"/>`;
+      [[60, '60%'], [80, '80%']].forEach(([p, t]) => { g += `<line x1="${X(p)}" x2="${X(p)}" y1="72" y2="98" stroke="#e8f0e4" stroke-width="1.5"/><text x="${X(p)}" y="110" font-size="10" text-anchor="middle">${t}</text>`; });
+      g += `<text x="4" y="110" font-size="10" fill="${C.ink3}">${L('下一个 slot 的投票', 'votes for the next slot')}</text>`;
+      svg.innerHTML = `<svg viewBox="0 0 ${W} 114" role="img" aria-label="Votor certificates">${g}</svg>`;
       st.set([
-        [L('当前 slot', 'Current slot'), cur.toLocaleString('en-US'), ''],
-        [L('tower 深度', 'Tower depth'), `${n} / ${MAX}`, n === MAX ? 'good' : ''],
-        ['root', root === null ? '—' : root.toLocaleString('en-US'), root === null ? '' : 'good'],
-        [L('最早可投另一分叉', 'Earliest vote on other fork'), n ? earliest.toLocaleString('en-US') : '—', ''],
-        [L('需要等待', 'Wait'), n ? `${wait.toLocaleString('en-US')} slots ≈ ${dur(wait * 0.4)}` : '—', wait > 1000 ? 'bad' : wait > 30 ? 'mid' : 'good'],
+        [L('支持这个块', 'For the block'), `${o.notar}%`, o.notar >= 80 ? 'good' : o.notar >= 60 ? 'mid' : 'bad'],
+        [L('投 skip', 'Skip votes'), `${o.skip}%`, o.skip >= 60 ? 'bad' : ''],
+        [L('离线', 'Offline'), `${off}%`, off > 20 ? 'mid' : ''],
+        [L('结果', 'Result'), LBL[o.r], o.r === 'fast' ? 'good' : o.r === 'slow' ? 'mid' : 'bad'],
+        [L('终结用时（示意）', 'Time to finality (illustrative)'), o.r === 'fast' ? '≈ 0.1–0.15 s' : o.r === 'slow' ? L('多一轮投票', 'one more round') : '—', o.r === 'fast' ? 'good' : ''],
       ]);
-      note.textContent = L('黄色是分叉点之上、属于被放弃分叉的票。要改投另一分叉，这些票都必须先过期。连续投票时下层的锁定期不断翻倍，切换的代价随之增长。', 'Amber votes sit above the fork point, on the fork being abandoned. All of them must expire before the validator may vote on the other fork. Consistent voting keeps doubling the lockouts underneath, so switching gets more expensive.');
+      note.textContent = o.r === 'fast' ? L('第一轮就有至少 80% 的质押支持：一张快速终结证书，slot 立即终结。', 'At least 80% of stake in the first round: one fast-finalisation certificate, and the slot is final at once.')
+        : o.r === 'slow' ? L('60% 到 80% 之间：先形成公证（notarization）证书，第二轮再有 60% 才终结。两条路径同时进行。', 'Between 60% and 80%: a notarisation certificate forms first, and a second round at 60% finalises the slot. Both paths run at once.')
+        : o.r === 'skip' ? (downLeft > 0 || (hist.length && hist[hist.length - 1].down) ? L('leader 离线，块没有在本地超时之前送到。在线的验证者都投 skip，每个 slot 很快得到一张 skip 证书，4 个 slot 的窗口就这样过去，链不会停下来等它。', 'The leader is offline, so no block arrives before the local timeout. Online validators vote skip, each slot quickly gets a skip certificate, and the four-slot window passes without the chain waiting.') : L('块没有及时送到大多数验证者：60% 的质押投了 skip，形成 skip 证书。', 'The block did not reach most validators in time: 60% of stake voted skip, and a skip certificate formed.'))
+          : L('支持和跳过都不到 60%，暂时形成不了证书。在线质押低于 60% 时就会这样。"20+20"模型：恶意质押不超过 20% 时安全，另外再有最多 20% 离线时仍能前进。', 'Neither side reaches 60%, so no certificate forms yet. This happens once online stake falls below 60%. The "20+20" model: safe with up to 20% adversarial stake, and still live with up to another 20% offline.');
     }
     draw();
   }
 
-  // 5. delinquency and credits: stop voting and watch the 128-slot line; vote latency and TVC credits; skip rate
+  // 4. the admission ticket and the epoch boundary: is the validator in the set for N+1 and N+2?
+  function admission(el) {
+    title(el);
+    let balance = 0.6, rate = 0, hours = 6, topup = 'none', bls = true;
+    S.wg.slider(el, { label: L('vote account 余额（SOL）', 'Vote account balance (SOL)'), min: 0, max: 8, step: 0.1, value: balance, fmt: v => `◎${fmt(v, 1)}` }, v => { balance = v; draw(); });
+    S.wg.slider(el, { label: L('自动补充（出块收入，SOL/epoch）', 'Auto-fund (block revenue, SOL/epoch)'), min: 0, max: 1.5, step: 0.1, value: rate, fmt: v => `◎${fmt(v, 1)}` }, v => { rate = v; draw(); });
+    S.wg.slider(el, { label: L('距边界（小时）', 'Time to the boundary (h)'), min: 0.5, max: 24, step: 0.5, value: hours, fmt: v => `${fmt(v, 1)} h` }, v => { hours = v; draw(); });
+    S.wg.buttons(el, [[L('不充值', 'No top-up'), () => { topup = 'none'; draw(); }], [L('边界前充 5 SOL', 'Top up 5 SOL before the boundary'), () => { topup = 'before'; draw(); }], [L('边界后一小时充 5 SOL', 'Top up 5 SOL an hour after it'), () => { topup = 'after'; draw(); }]], { toggle: true });
+    S.wg.buttons(el, [[L('已登记 BLS 公钥', 'BLS key registered'), () => { bls = true; draw(); }], [L('没有 BLS 公钥', 'No BLS key'), () => { bls = false; draw(); }]], { toggle: true });
+    const svg = E('div'), st = S.wg.stats(el), note = E('div', 'wg-cap');
+    el.insertBefore(svg, st.el); el.appendChild(note);
+    function draw() {
+      if (!el.contains(svg)) return;
+      // now: epoch N−1, `hours` before epoch N begins. Boundary 1 (into N) decides N+1; boundary 2 (into N+1) decides N+2.
+      const b1 = balance + rate * hours / 24 + (topup === 'before' ? 5 : 0);
+      const in1 = bls && b1 >= ADMIT, a1 = in1 ? b1 - TICKET : b1;
+      const b2 = a1 + rate + (topup === 'after' ? 5 : 0);
+      const in2 = bls && b2 >= ADMIT, a2 = in2 ? b2 - TICKET : b2;
+      const W = 600, x0 = 10, ew = 146, X = (e, f) => x0 + e * ew + f * ew;
+      const tag = ok => ok ? [C.lime, L('在集合中', 'in the set')] : [C.red, L('被排除', 'left out')];
+      let g = '';
+      [['N−1', [C.blue, L('现在', 'now')]], ['N', [C.lime, L('已决定', 'decided')]], ['N+1', tag(in1)], ['N+2', tag(in2)]].forEach(([t, [col, lab]], e) => {
+        g += `<text x="${X(e, 0) + 4}" y="14" font-size="11">epoch ${t}</text><rect x="${X(e, 0)}" y="20" width="${ew - 6}" height="26" rx="4" fill="${col}" opacity="${e === 0 ? 0.25 : 0.7}"/><text x="${X(e, 0) + 6}" y="37" font-size="10" fill="${e === 0 ? '#e8f0e4' : C.bg}">${lab}</text>`;
+      });
+      [[1, b1, in1, L('边界 1：决定 N+1', 'boundary 1: decides N+1')], [2, b2, in2, L('边界 2：决定 N+2', 'boundary 2: decides N+2')]].forEach(([e, b, ok, t]) => {
+        g += `<line x1="${X(e, 0) - 3}" x2="${X(e, 0) - 3}" y1="16" y2="70" stroke="${ok ? C.lime : C.red}" stroke-width="2"/><text x="${X(e, 0)}" y="62" font-size="10" fill="${ok ? C.lime : C.red}">${t}</text><text x="${X(e, 0)}" y="76" font-size="10">${L('余额', 'balance')} ◎${fmt(b, 3)} ${ok ? '− 0.8' : '< ' + fmt(ADMIT, 3)}</text>`;
+      });
+      g += `<line x1="${X(0, 1 - Math.min(1, hours / 24)) - 3}" x2="${X(0, 1 - Math.min(1, hours / 24)) - 3}" y1="18" y2="48" stroke="#e8f0e4" stroke-width="2"/>`;
+      if (topup === 'after') g += `<path d="M${X(1, 0.04)} 50 l-5 9 h10z" fill="${C.amber}"/>`;
+      if (topup === 'before') g += `<path d="M${X(0, 0.97)} 50 l-5 9 h10z" fill="${C.amber}"/>`;
+      svg.innerHTML = `<svg viewBox="0 0 ${W} 82" role="img" aria-label="admission timeline">${g}</svg>`;
+      st.set([
+        [L('边界 1 时的余额', 'Balance at boundary 1'), `◎${fmt(b1, 3)}`, b1 >= ADMIT ? '' : 'bad'],
+        ['epoch N+1', in1 ? L('在集合中', 'in the set') : L('被排除', 'left out'), in1 ? 'good' : 'bad'],
+        [L('边界 2 时的余额', 'Balance at boundary 2'), `◎${fmt(b2, 3)}`, b2 >= ADMIT ? '' : 'bad'],
+        ['epoch N+2', in2 ? L('在集合中', 'in the set') : L('被排除', 'left out'), in2 ? 'good' : 'bad'],
+        [L('之后还够几个边界', 'Boundaries covered after that'), bls ? String(Math.max(0, Math.floor((a2 - RENT) / TICKET))) : '0', a2 - RENT >= 5 * TICKET ? 'good' : a2 - RENT >= TICKET ? 'mid' : 'bad'],
+      ]);
+      note.textContent = !bls ? L('没有 BLS 公钥，余额再多也进不了集合：准入失败的原因之一就是"no BLS pubkey"。', 'Without a BLS key no balance helps: "no BLS pubkey" is one of the reasons admission fails.')
+        : topup === 'after' && !in1 ? L('边界 1 已经按当时的余额决定了 N+1。边界之后的充值只在边界 2 被计算，最早赶上 N+2，验证者整整缺席 N+1。', 'Boundary 1 already decided N+1 from the balance at that moment. A top-up after it is counted at boundary 2, so it helps from N+2 at the earliest, and the validator misses all of N+1.')
+          : !in1 ? L('边界 1 时余额低于准入费加免租金额，验证者缺席 N+1。在边界之前充值，才能保住 N+1。', 'At boundary 1 the balance is below the ticket plus rent, so the validator misses N+1. Only a top-up before the boundary saves N+1.')
+            : L(`每个边界扣 ${TICKET} SOL，免租金额 ${fmt(RENT, 3)} SOL 必须留在账户里。出块收入改为进入 vote account 后，余额可以自己补充；这个设置在两个 epoch 之后生效。`, `Each boundary takes ${TICKET} SOL, and the rent-exempt ${fmt(RENT, 3)} SOL must stay in the account. With block revenue directed to the vote account, the balance refills itself; that setting takes effect two epochs later.`);
+    }
+    draw();
+  }
+
+  // 5. delinquency and skip rate at 200 ms: stop voting and watch the 128-slot line; miss leader windows
   function delinquency(el) {
     title(el);
-    let voting = true, tip = 0, last = 0, latency = 1, speed = 4, skipped = 2;
+    let voting = true, tip = 0, last = 0, speed = 4, missed = 0, votedT = 0, allT = 0;
     S.wg.buttons(el, [[L('投票中', 'Voting'), () => { voting = true; }], [L('停止投票', 'Stop voting'), () => { voting = false; }]], { toggle: true });
     S.wg.buttons(el, [['1×', () => { speed = 1; }], ['4×', () => { speed = 4; }], ['16×', () => { speed = 16; }]], { toggle: true, selected: 1 });
-    S.wg.slider(el, { label: L('投票落地延迟（slot）', 'Vote latency (slots)'), min: 1, max: 20, value: 1 }, v => { latency = v; });
-    S.wg.slider(el, { label: L('40 个 leader slot 中跳过', 'Skipped of 40 leader slots'), min: 0, max: 40, value: 2 }, v => { skipped = v; });
+    S.wg.slider(el, { label: L('10 个 leader 窗口中错过', 'Leader windows missed, of 10'), min: 0, max: 10, value: 0 }, v => { missed = v; });
     const meter = E('div'), st = S.wg.stats(el), note = E('div', 'wg-cap');
     el.insertBefore(meter, st.el); el.appendChild(note);
-    const credits = lat => (lat <= 2 ? 16 : Math.max(1, 16 - (lat - 2)));
     const draw = () => {
       const behind = Math.max(0, Math.floor(tip - last)), del = behind > 128;
-      meter.innerHTML = `<div class="wg-cap" style="margin-bottom:.3rem">${L('最后一票落后链头', 'Last vote behind the tip')}: <b style="color:${del ? C.red : C.ink2}">${behind} slots</b> · ${L('128 处是 delinquent 线', 'the line at 128 is the delinquency threshold')}</div>${S.wg.meter(behind / 256 * 100, del ? 'bad' : behind > 64 ? 'mid' : '', [[50, '128']])}`;
-      const c = credits(latency);
+      meter.innerHTML = `<div class="wg-cap" style="margin-bottom:.3rem">${L('最后一票落后链头', 'Last vote behind the tip')}: <b style="color:${del ? C.red : C.ink2}">${behind} slots · ${fmt(behind * 0.2, 1)} s</b> · ${L('128 处是 delinquent 线', 'the line at 128 is the delinquency threshold')}</div>${S.wg.meter(behind / 256 * 100, del ? 'bad' : behind > 64 ? 'mid' : '', [[50, '128']])}`;
       st.set([
         [L('状态', 'Status'), del ? 'DELINQUENT' : voting ? L('投票中', 'voting') : L('未投票', 'not voting'), del ? 'bad' : voting ? 'good' : 'mid'],
-        [L('每票 credits', 'Credits per vote'), `${c} / 16`, c === 16 ? 'good' : c >= 12 ? 'mid' : 'bad'],
-        [L('与中位数之比（中位数按满分）', 'vs median (median at full credit)'), `${fmt(c / 16 * 100, 0)}%`, c === 16 ? 'good' : c >= 12 ? 'mid' : 'bad'],
-        ['skip rate', `${fmt(skipped / 40 * 100, 1)}%`, skipped <= 2 ? 'good' : skipped <= 8 ? 'mid' : 'bad'],
+        [L('128 个 slot 等于', '128 slots equal'), '25.6 s', ''],
+        ['skip rate', `${fmt(missed * 10, 0)}%`, missed === 0 ? 'good' : missed <= 2 ? 'mid' : 'bad'],
+        [L('本 epoch 在投票的时间', 'Time voting this epoch'), `${fmt(allT ? votedT / allT * 100 : 100, 0)}%`, !allT || votedT / allT > 0.98 ? 'good' : votedT / allT > 0.9 ? 'mid' : 'bad'],
       ]);
       note.textContent = del
-        ? L('落后超过 128 个 slot：RPC 把它列为 delinquent，不再获得 credits。恢复投票后，最后一票会立即追到链头附近。', 'More than 128 slots behind: RPC lists it as delinquent and it earns no credits. Once it votes again, its last vote jumps back near the tip.')
-        : L('延迟在 2 个 slot 以内拿满 16 分，之后每晚一个 slot 少 1 分。跳过的 leader slot 损失的是出块收入，不影响 credits。', 'A vote landing within 2 slots earns the full 16 credits; each slot later earns one less. Skipped leader slots lose block income; they do not change credits.');
+        ? L('落后超过 128 个 slot，约 26 秒：RPC 把它列为 delinquent，它挣不到投票奖励。恢复投票后，最后一票会立即回到链头附近。', 'More than 128 slots behind, about 26 seconds: RPC lists it as delinquent, and it earns no vote rewards. Once it votes again, its last vote jumps back near the tip.')
+        : L('错过的 leader 窗口很快变成 skip 证书，计入 skip rate，损失的是出块收入。本 epoch 的投票奖励总额在 epoch 开始时就已确定，停投只会让这台验证者分到的份额变小。', 'A missed leader window quickly becomes skip certificates. It counts towards the skip rate and loses block revenue. The epoch\'s vote reward pool is fixed when the epoch starts; time not voting only shrinks this validator\'s share of it.');
     };
     S.wg.loop(dt => {
-      tip += dt * 2.5 * speed;
-      if (voting) last = tip - latency;
+      tip += dt * 5 * speed; allT += dt * speed;
+      if (voting) { last = tip - 1; votedT += dt * speed; }
       draw();
     });
     draw();
@@ -247,13 +257,13 @@
     S.wg.slider(el, { label: L('委托质押（SOL）', 'Delegated stake (SOL)'), min: 0, max: STAKES.length - 1, value: 4, fmt: v => STAKES[v].toLocaleString('en-US') }, v => { stake = STAKES[v]; draw(); });
     S.wg.slider(el, { label: L('佣金', 'Commission'), min: 0, max: 100, value: 5, fmt: v => `${v}%` }, v => { comm = v; draw(); });
     S.wg.slider(el, { label: L('网络质押年化（假设）', 'Network staking yield (assumed)'), min: 3, max: 9, step: 0.5, value: 6, fmt: v => `${v}%` }, v => { apy = v; draw(); });
-    S.wg.slider(el, { label: L('credits 相对中位数', 'Credits vs median'), min: 70, max: 100, value: 100, fmt: v => `${v}%` }, v => { perf = v; draw(); });
+    S.wg.slider(el, { label: L('本 epoch 投票表现（相对中位数）', 'Voting this epoch (vs median)'), min: 70, max: 100, value: 100, fmt: v => `${v}%` }, v => { perf = v; draw(); });
     S.wg.slider(el, { label: L('在 epoch N 的何时委托', 'Delegate during epoch N at'), min: 0, max: 99, value: 50, fmt: v => `${v}%` }, v => { at = v; draw(); });
     const svg = E('div'), st = S.wg.stats(el), note = E('div', 'wg-cap');
     el.insertBefore(svg, st.el); el.appendChild(note);
     function draw() {
       if (!el.contains(svg)) return;
-      const perYear = 365.25 * 86400 / (EPOCH * 0.4), gross = stake * apy / 100 / perYear * perf / 100, cut = gross * comm / 100;
+      const perYear = 365.25 * 86400 / (EPOCH * 0.2), gross = stake * apy / 100 / perYear * perf / 100, cut = gross * comm / 100;
       const W = 600, x0 = 20, ew = 186, X = (e, f) => x0 + e * ew + f * ew;
       let g = '';
       ['N', 'N+1', 'N+2'].forEach((t, e) => { g += `<rect x="${X(e, 0)}" y="30" width="${ew - 4}" height="26" rx="4" fill="${C.panel}" stroke="${C.line}"/><text x="${X(e, 0) + 6}" y="22" font-size="11">epoch ${t}</text>`; });
@@ -266,14 +276,14 @@
         [L('每 epoch 通胀奖励', 'Inflation reward per epoch'), `◎${fmt(gross, 2)}`, ''],
         [L('验证者佣金（进 vote account）', 'Commission (to vote account)'), `◎${fmt(cut, 2)}`, ''],
         [L('委托人得到', 'Delegators receive'), `◎${fmt(gross - cut, 2)}`, comm > 10 ? 'mid' : 'good'],
-        [L('一年合计（按 400 ms slot）', 'Per year (400 ms slots)'), `◎${fmt(gross * perYear, 0)}`, ''],
+        [L('一年合计（200 ms slot，约 365 个 epoch）', 'Per year (200 ms slots, about 365 epochs)'), `◎${fmt(gross * perYear, 0)}`, ''],
       ]);
-      note.textContent = L('收益率是假设值，实际值随通胀计划和全网质押比例变化。credits 低于中位数时，奖励按比例减少，委托人和验证者一起少拿。', 'The yield is an assumption; the real figure follows the inflation schedule and the share of SOL staked. Credits below the median shrink the reward for delegators and validator alike.');
+      note.textContent = L('收益率是假设值，实际值随通胀计划和全网质押比例变化。一个 epoch 的奖励总额在 epoch 开始时就已确定；投票表现低于中位数，委托人和验证者一起少拿。', 'The yield is an assumption; the real figure follows the inflation schedule and the share of SOL staked. An epoch\'s reward pool is fixed when the epoch starts; voting below the median shrinks the share for delegators and validator alike.');
     }
     draw();
   }
 
-  // 7. snapshots: downtime vs local snapshot vs download, and whether the node can catch up
+  // 7. snapshots at 200 ms: downtime vs local snapshot vs download, and whether the node can catch up
   function snapshots(el) {
     title(el);
     const DOWN = [[60, L('1 分钟', '1 min')], [300, L('5 分钟', '5 min')], [900, L('15 分钟', '15 min')], [3600, L('1 小时', '1 h')], [6 * 3600, L('6 小时', '6 h')], [86400, L('1 天', '1 day')], [2 * 86400, L('2 天', '2 days')]];
@@ -286,14 +296,14 @@
     el.insertBefore(svg, st.el); el.appendChild(note);
     function draw() {
       if (!el.contains(svg)) return;
-      const RATE = 2.5, LOAD = 240, GAIN = 25, gapDown = down * RATE;
+      const RATE = 5, LOAD = 240, GAIN = 25, gapDown = down * RATE;
       let path, prep, gap, gain;
       if (gapDown <= 2500 || noFetch) {
         path = L('使用本地快照', 'use local snapshot'); prep = LOAD; gap = gapDown + LOAD * RATE;
-        gain = gap > 50000 ? -0.9 : GAIN;
+        gain = gap > 100000 ? -1.8 : GAIN;
       } else {
         const dl = size * 1024 / mbps;
-        path = L('从 known validator 下载新快照', 'download a fresh snapshot from a known validator'); prep = dl + LOAD; gap = 380 + prep * RATE; gain = GAIN;
+        path = L('从 known validator 下载新快照', 'download a fresh snapshot from a known validator'); prep = dl + LOAD; gap = 760 + prep * RATE; gain = GAIN;
       }
       const catchT = gain > 0 ? gap / gain : Infinity, total = prep + catchT;
       const W = 600, maxT = Math.min(Math.max(total === Infinity ? prep * 2 : total, 120), 7200), X = t => 20 + Math.min(t, maxT) / maxT * (W - 40);
@@ -302,12 +312,13 @@
       g += `<text x="20" y="62" font-size="10">0</text><text x="${W - 20}" y="62" font-size="10" text-anchor="end">${dur(maxT)}</text>`;
       svg.innerHTML = `<svg viewBox="0 0 ${W} 68" role="img" aria-label="restart timeline">${g}</svg>`;
       st.set([
+        [L('停机期间错过的 slot', 'Slots missed while down'), Math.round(gapDown).toLocaleString('en-US'), gapDown > 2500 ? 'mid' : ''],
         [L('启动方式', 'Start path'), path, ''],
-        [L('加载后落后', 'Behind after load'), `${Math.round(gap).toLocaleString('en-US')} slots`, gap > 50000 ? 'bad' : ''],
+        [L('加载后落后', 'Behind after load'), `${Math.round(gap).toLocaleString('en-US')} slots`, gap > 100000 ? 'bad' : ''],
         [L('恢复投票还需', 'Voting again in'), gain > 0 ? dur(total) : L('追不上', 'never'), gain > 0 ? (total < 900 ? 'good' : 'mid') : 'bad'],
       ]);
       note.textContent = gain > 0
-        ? L('模型是示意性的：加载约 4 分钟，追赶速度约每秒 25 个 slot。真实数值取决于硬件、网络和集群负载。', 'The model is illustrative: about 4 minutes to load and a catch-up rate of about 25 slots a second. Real figures depend on hardware, network and cluster load.')
+        ? L('模型是示意性的：加载约 4 分钟，追赶时每秒净追约 25 个 slot。200 ms 的 slot 下，2,500 个 slot 的本地快照年限只相当于 8 分钟多一点。真实数值取决于硬件、网络和集群负载。', 'The model is illustrative: about 4 minutes to load and a net catch-up of about 25 slots a second. At 200 ms, the 2,500-slot local snapshot age is just over 8 minutes. Real figures depend on hardware, network and cluster load.')
         : L('本地快照太旧。缺失的 slot 只能靠 repair 从其他节点要，速度比集群出块还慢，所以差距只会扩大。去掉 --no-snapshot-fetch 重启。', 'The local snapshot is too old. Missing slots can only be repaired from peers, more slowly than the cluster produces them, so the gap only grows. Restart without --no-snapshot-fetch.');
     }
     draw();
@@ -315,146 +326,186 @@
 
   /* ---------- step 1: the lesson ---------- */
   S.registerLesson({
-    id: 'solana-basics', network: 'solana', minutes: 35,
+    id: 'solana-basics', network: 'solana', minutes: 40,
     title: LL('面向验证者运维的 Solana 基础', 'Solana fundamentals for validator operators'),
-    tagline: LL('slot 与 leader、三把钥匙、投票的成本、锁定期、delinquent、质押奖励和快照。', 'Slots and leaders, the three keys, what voting costs, lockouts, delinquency, stake rewards and snapshots.'),
+    tagline: LL('200 ms 的 slot 与 leader、钥匙与 BLS 公钥、Votor 证书、准入费与 epoch 边界、delinquent、奖励和快照。', 'Slots and leaders at 200 ms, keys and the BLS key, Votor certificates, the admission ticket and the epoch boundary, delinquency, rewards and snapshots.'),
     chapters: [
       {
         title: LL('slot、leader 与 epoch', 'Slots, leaders and epochs'),
         body: LL(
-          `<p>Solana 把时间切成 <b>slot</b>。每个 slot 只有一个验证者有权出块，它就是这个 slot 的 <b>leader</b>。其他验证者重放这个块，再对它投票。</p>
-<p><b>leader 表</b>按连续 4 个 slot 为一组分配，事先根据质押分布算好：质押越多，分到的 slot 越多。每个验证者都能算出同一张表，所以都知道接下来轮到谁，交易可以直接发给即将出块的 leader。</p>
-<p>一个 <b>epoch</b> 是 432,000 个 slot。质押的生效与解除、通胀奖励的结算、新的 leader 表，都在 epoch 边界发生。</p>
-<p>大多数验证者运行的客户端是 Anza 维护的 Agave，本课程的练习也使用它。Firedancer 是另一套独立实现；Frankendancer 则把 Firedancer 的网络层与 Agave 的运行时组合在一起。</p>
-<div class="note warn">练习中的模拟集群使用 400 ms 的 slot，一个 epoch 约两天。2026 年主网的目标 slot 时长分几步降到了 200 ms。epoch 仍是 432,000 个 slot，所以现在一个 epoch 约一天。在下面的组件里切换 slot 时长，可以看到两者的差别。</div>`,
-          `<p>Solana divides time into <b>slots</b>. In each slot exactly one validator may produce a block: the slot's <b>leader</b>. The other validators replay that block and vote on it.</p>
-<p>The <b>leader schedule</b> assigns slots in runs of four consecutive slots per leader. It is computed in advance from the stake distribution: more stake means more slots. Every validator can compute the same schedule, so all of them know who leads next, and transactions go straight to the upcoming leaders.</p>
-<p>An <b>epoch</b> is 432,000 slots. Stake activation and deactivation, inflation rewards and the next leader schedule all change at epoch boundaries.</p>
-<p>Most validators run Agave, the client maintained by Anza, and the labs in this course use it. Firedancer is an independent implementation; Frankendancer combines Firedancer's networking with Agave's runtime.</p>
-<div class="note warn">The simulated cluster in the labs uses 400 ms slots, which makes an epoch about two days. In 2026 the target slot time on mainnet was cut to 200 ms in stages. Epochs kept 432,000 slots, so an epoch now lasts about one day. Switch the slot time in the widget below to compare.</div>`),
+          `<p>Solana 把时间切成 <b>slot</b>。每个 slot 只有一个验证者有权出块，它就是这个 slot 的 <b>leader</b>。其他验证者收到这个块、重放它，再对它投票。</p>
+<p><b>leader 表</b>按连续 4 个 slot 为一组分配，事先根据质押分布算好：质押越多，分到的 slot 越多。每个验证者都能算出同一张表，所以都知道接下来轮到谁。</p>
+<p>目标 slot 时长由 SIMD-0525 分几步缩短：400、350、300、250，最后到 200 ms。200 ms 这一步于 2026 年 10 月在主网生效。每个 slot 的计算上限同步降低，所以每秒的计算量大致不变。</p>
+<p>一个 <b>epoch</b> 仍是 432,000 个 slot，现在约一天。质押的生效与解除、奖励结算、新的 leader 表，以及验证者的准入费，都在 epoch 边界发生。</p>
+<p>大多数验证者运行 Anza 维护的 Agave，本课程的练习也使用它。Agave v4.3.x 是 Alpenglow 的发布线。Firedancer 是另一套独立实现；Frankendancer 把 Firedancer 的网络层与 Agave 的运行时组合在一起。</p>`,
+          `<p>Solana divides time into <b>slots</b>. In each slot exactly one validator may produce a block: the slot's <b>leader</b>. The other validators receive that block, replay it and vote on it.</p>
+<p>The <b>leader schedule</b> assigns slots in runs of four consecutive slots per leader. It is computed in advance from the stake distribution: more stake means more slots. Every validator can compute the same schedule, so all of them know who leads next.</p>
+<p>SIMD-0525 cut the target slot time in steps: 400, 350, 300, 250 and finally 200 ms. The 200 ms step took effect on mainnet in October 2026. The compute limit per slot was reduced with it, so compute per second stays about the same.</p>
+<p>An <b>epoch</b> is still 432,000 slots, which is now about a day. Stake activation and deactivation, rewards, the next leader schedule and the validators' admission tickets all happen at epoch boundaries.</p>
+<p>Most validators run Agave, the client maintained by Anza, and the labs in this course use it. Agave v4.3.x is the Alpenglow release line. Firedancer is an independent implementation; Frankendancer combines Firedancer's networking with Agave's runtime.</p>`),
         widget: slotClock,
         quiz: [
           { q: LL('一个 leader 每次连续分到几个 slot？', 'How many consecutive slots does a leader get at a time?'), options: [LL('1 个', '1'), LL('4 个', '4'), LL('32 个', '32'), LL('整个 epoch', 'A whole epoch')], answer: 1, why: LL('leader 表以 4 个连续 slot 为一组，leader 可以连续出块。', 'The schedule assigns four consecutive slots, so a leader can build blocks back to back.') },
-          { q: LL('slot 为 400 ms 时，一个 epoch 大约多长？', 'With 400 ms slots, about how long is an epoch?'), options: [LL('约 3 小时', 'About 3 hours'), LL('约 1 天', 'About 1 day'), LL('约 2 天', 'About 2 days'), LL('约 1 周', 'About 1 week')], answer: 2, why: LL('432,000 × 0.4 秒 = 172,800 秒，即两天。slot 为 200 ms 时约一天。', '432,000 × 0.4 s = 172,800 s, which is two days. At 200 ms it is about one day.') },
-          { q: LL('epoch 边界上会发生什么？', 'What happens at an epoch boundary?'), options: [LL('新的 leader 表生效，质押变动生效', 'A new leader schedule and stake changes take effect'), LL('所有验证者重启', 'All validators restart'), LL('ledger 被清空', 'The ledger is wiped'), LL('佣金被重置', 'Commissions are reset')], answer: 0, why: LL('leader 表、质押激活与解除、奖励结算都以 epoch 为单位。', 'The leader schedule, stake activation and deactivation, and rewards all work per epoch.') },
+          { q: LL('slot 为 200 ms 时，一个 epoch 大约多长？', 'With 200 ms slots, about how long is an epoch?'), options: [LL('约 3 小时', 'About 3 hours'), LL('约 1 天', 'About 1 day'), LL('约 2 天', 'About 2 days'), LL('约 1 周', 'About 1 week')], answer: 1, why: LL('432,000 × 0.2 秒 = 86,400 秒，正好一天。slot 为 400 ms 时是两天。', '432,000 × 0.2 s = 86,400 s, which is one day. At 400 ms it was two.') },
+          { q: LL('slot 缩短到 200 ms 后，每个 slot 的计算上限怎样变化？', 'When slots were cut to 200 ms, what happened to the compute limit per slot?'), options: [LL('不变', 'It stayed the same'), LL('同步降低，每秒的计算量大致不变', 'It was reduced, so compute per second stays about the same'), LL('翻倍', 'It doubled'), LL('取消了上限', 'The limit was removed')], answer: 1, why: LL('slot 变短，每个 slot 能做的计算也相应减少。', 'Shorter slots each carry correspondingly less compute.') },
         ],
       },
       {
-        title: LL('钥匙与账户', 'Keys and accounts'),
+        title: LL('钥匙、账户与 BLS 公钥', 'Keys, accounts and the BLS key'),
         body: LL(
           `<p>一个验证者涉及三把钥匙和两个链上账户。</p>
 <table><tr><th>钥匙</th><th>放在哪里</th><th>能做什么</th></tr>
-<tr><td>identity</td><td>验证者主机</td><td>以默认 vote authority 的身份签投票；签区块和 gossip 消息；支付投票手续费。它的账户还会收到自己所出区块的交易费。</td></tr>
+<tr><td>identity</td><td>验证者主机</td><td>默认的 authorized voter：签投票消息、区块和 gossip 消息。它的账户收出块收入，并支付普通交易的手续费。</td></tr>
 <tr><td>vote account keypair</td><td>只用一次</td><td>只在创建 vote account 时签名。账户建好之后，这把钥匙没有任何权限，账户地址才是长期使用的东西。</td></tr>
-<tr><td>authorized withdrawer</td><td>离线</td><td>从 vote account 取款、修改佣金、更换 vote account 上的 identity 和 vote authority。它是控制权的根。</td></tr></table>
-<p><b>vote account</b> 记录投票状态：最近的投票、获得的 credits、佣金比例，通胀奖励中的佣金也打进这里。<b>identity 账户</b>就是 identity 公钥对应的普通账户，余额用来付手续费。</p>
+<tr><td>authorized withdrawer</td><td>离线</td><td>从 vote account 取款、修改佣金、更换 vote account 上的 identity 和 voter。它是控制权的根。</td></tr></table>
+<p><b>identity 账户</b>不再为投票付费。在 Alpenglow 下投票不是交易，按票收取的手续费已经取消。它仍然签名、收取 leader 的出块收入、支付普通交易费。运维也常从它给 vote account 补钱。</p>
+<p><b>vote account</b> 记录投票状态、credits 和佣金，现在还要存放<b>准入费</b>：每个 epoch 边界从这里扣一次（第 4 章）。任何人都可以向它转账，只有 withdrawer 能取出。</p>
+<h3>BLS 公钥</h3>
+<p>Alpenglow 用 BLS 签名把许多验证者的投票聚合成一张证书。每个 vote account 都要登记一个 BLS 公钥，它由 authorized voter keypair 派生。没有登记 BLS 公钥的验证者被排除在共识之外，停止投票。主网自 2026 年 7 月起要求这个公钥，登记需要 Solana CLI 4.1.0 或更高版本。</p>
+<pre class="term-snip">$ solana-keygen bls_pubkey &lt;AUTHORIZED_VOTER_KEYPAIR&gt;
+$ solana vote-authorize-voter-checked &lt;VOTE_ACCOUNT&gt; &lt;AUTHORIZED_VOTER_KEYPAIR&gt; &lt;AUTHORIZED_VOTER_KEYPAIR&gt;
+$ solana vote-account &lt;VOTE_ACCOUNT&gt; | grep "BLS Public Key"</pre>
+<p>第二条命令把同一个 keypair 传两次：它把 BLS 公钥写进 vote account，authorized voter 保持不变。</p>
 <p>identity 要持续签名，所以必须放在服务器上。withdrawer 很少用到，应当离线保存，例如放在硬件钱包或一台不联网的机器上，助记词另外存放。</p>`,
           `<p>A validator involves three keys and two on-chain accounts.</p>
 <table><tr><th>Key</th><th>Where it lives</th><th>What it can do</th></tr>
-<tr><td>identity</td><td>validator host</td><td>Signs votes as the default vote authority; signs blocks and gossip messages; pays vote fees. Its account also receives transaction fees from the blocks it produces.</td></tr>
+<tr><td>identity</td><td>validator host</td><td>The default authorized voter: signs vote messages, blocks and gossip messages. Its account receives block revenue and pays ordinary transaction fees.</td></tr>
 <tr><td>vote account keypair</td><td>used once</td><td>Signs only the creation of the vote account. Afterwards it has no authority; the account address is what stays in use.</td></tr>
-<tr><td>authorized withdrawer</td><td>offline</td><td>Withdraws from the vote account, changes the commission, and reassigns the identity and the vote authority on the vote account. It is the root of control.</td></tr></table>
-<p>The <b>vote account</b> holds the vote state: recent votes, earned credits and the commission rate, and commission from inflation rewards is paid into it. The <b>identity account</b> is the ordinary account at the identity's pubkey; its balance pays the fees.</p>
+<tr><td>authorized withdrawer</td><td>offline</td><td>Withdraws from the vote account, changes the commission, and reassigns the identity and the voter on the vote account. It is the root of control.</td></tr></table>
+<p>The <b>identity account</b> no longer pays for votes. Under Alpenglow a vote is not a transaction, and the per-vote fee is gone. The identity still signs, receives the leader's block revenue and pays ordinary transaction fees. Operators also often refill the vote account from it.</p>
+<p>The <b>vote account</b> holds the vote state, credits and commission, and now also the <b>admission ticket</b> money: each epoch boundary takes the ticket from it (chapter 4). Anyone can deposit to it; only the withdrawer can take SOL out.</p>
+<h3>The BLS key</h3>
+<p>Alpenglow aggregates the votes of many validators into one certificate with BLS signatures. Every vote account must have a BLS public key registered, derived from the authorized voter keypair. A validator without a registered BLS key is excluded from consensus and stops voting. Mainnet has required the key since July 2026, and registering it needs Solana CLI 4.1.0 or later.</p>
+<pre class="term-snip">$ solana-keygen bls_pubkey &lt;AUTHORIZED_VOTER_KEYPAIR&gt;
+$ solana vote-authorize-voter-checked &lt;VOTE_ACCOUNT&gt; &lt;AUTHORIZED_VOTER_KEYPAIR&gt; &lt;AUTHORIZED_VOTER_KEYPAIR&gt;
+$ solana vote-account &lt;VOTE_ACCOUNT&gt; | grep "BLS Public Key"</pre>
+<p>The second command passes the same keypair twice: it writes the BLS key into the vote account and leaves the authorized voter unchanged.</p>
 <p>The identity signs continuously, so it has to be on the server. The withdrawer is rarely needed and belongs offline, on a hardware wallet or a machine that is not on the network, with its seed phrase stored separately.</p>`),
         widget: keyMap,
         after: LL('<div class="note warn">identity 泄露，损失的是它的余额，还可能被人在别处冒用；用 withdrawer 换一个新 identity 就能止损。withdrawer 泄露，损失的是整个 vote account 和对它的控制权，没有补救办法。</div>', '<div class="note warn">A leaked identity costs its balance and can be used elsewhere; the withdrawer replaces it with a new identity. A leaked withdrawer costs the vote account and control over it, with no way back.</div>'),
         quiz: [
           { q: LL('哪把钥匙能修改 vote account 的佣金？', 'Which key can change the commission on the vote account?'), options: [LL('identity', 'The identity'), LL('vote account keypair', 'The vote account keypair'), LL('authorized withdrawer', 'The authorized withdrawer'), LL('任何一个委托人', 'Any delegator')], answer: 2, why: LL('改佣金需要 withdrawer 签名，所以它决定这台验证者的收入。', 'Commission changes need the withdrawer\'s signature, which is why that key controls the validator\'s income.') },
           { q: LL('为什么 withdrawer 不能放在验证者主机上？', 'Why must the authorized withdrawer not be stored on the validator host?'), options: [LL('会拖慢投票', 'It slows down voting'), LL('拿到主机权限的人就能取走 vote account 的钱并改掉授权', 'Anyone who takes over the host could drain the vote account and change its authorities'), LL('验证者发现它就拒绝启动', 'The validator refuses to start if it finds it'), LL('它一个 epoch 后就过期', 'It expires after one epoch')], answer: 1, why: LL('服务器暴露在网络上。withdrawer 和 identity 放在一起，一次入侵就会失去全部控制权。', 'The server faces the network. Keeping the withdrawer next to the identity means one intrusion loses all control.') },
-          { q: LL('vote account 创建之后，它自己的 keypair 还能做什么？', 'After the vote account is created, what can its own keypair do?'), options: [LL('签投票', 'Sign votes'), LL('取出奖励', 'Withdraw rewards'), LL('什么都不能做，它没有权限', 'Nothing; it has no authority over the account'), LL('更换 identity', 'Change the identity')], answer: 2, why: LL('权限在 vote authority 和 withdrawer 手里，vote account keypair 只签过创建那一次。', 'Authority sits with the vote authority and the withdrawer. The vote account keypair only signed the creation.') },
+          { q: LL('vote account 没有登记 BLS 公钥，会怎样？', 'What happens if the vote account has no BLS key registered?'), options: [LL('没有影响', 'Nothing'), LL('投票手续费翻倍', 'Vote fees double'), LL('验证者被排除在共识之外，停止投票', 'The validator is excluded from consensus and stops voting'), LL('只影响出块', 'Only block production is affected')], answer: 2, why: LL('证书靠 BLS 签名聚合。没有 BLS 公钥，准入失败，验证者不能投票。', 'Certificates are aggregated with BLS signatures. Without the key, admission fails and the validator cannot vote.') },
+          { q: LL('谁可以往 vote account 里转 SOL？', 'Who can deposit SOL into a vote account?'), options: [LL('只有 withdrawer', 'Only the withdrawer'), LL('只有 identity', 'Only the identity'), LL('任何人，用一笔普通转账', 'Anyone, with a plain transfer'), LL('只有运行时', 'Only the runtime')], answer: 2, why: LL('存款不需要任何授权；取款才需要 withdrawer。', 'Deposits need no authority. Withdrawals need the withdrawer.') },
         ],
       },
       {
-        title: LL('投票的成本', 'Voting and its cost'),
+        title: LL('Votor：证书与终结', 'Votor: certificates and finality'),
         body: LL(
-          `<p>在 Tower BFT 下，每一票都是一笔普通交易。验证者几乎每个 slot 都投一票，手续费由 identity 支付。基础手续费是每个签名 5,000 lamports，即 0.000005 SOL。只由 identity 签名的投票交易有一个签名。</p>
-<p>slot 为 400 ms 时，一天约 216,000 票，约 1.1 SOL。identity 余额因此按固定速度下降。余额归零后，投票交易无法上链：进程还在运行，链上的验证者却已经停止投票。余额告警应当按"还能撑几天"来设，而不是按一个绝对数额。</p>
-<p>如果 vote authority 是 identity 之外的另一把钥匙，每票带两个签名，费用翻倍。</p>
-<div class="note warn">2026 年，testnet 和主网先后用 Alpenglow 取代了 Tower BFT。投票改为验证者之间直接传递的消息，不再是交易，按票收取的手续费随之取消，改为每个 epoch 从 vote account 扣一笔固定的准入费用。练习中的模拟集群仍按 Tower BFT 的按票收费建模。</div>`,
-          `<p>Under Tower BFT, every vote is an ordinary transaction. The validator votes in almost every slot, and the identity pays the fee. The base fee is 5,000 lamports, or 0.000005 SOL, per signature. A vote signed only by the identity carries one signature.</p>
-<p>At 400 ms slots that is about 216,000 votes a day, roughly 1.1 SOL. The identity balance therefore falls at a steady rate. When it reaches zero, vote transactions can no longer land: the process keeps running, while on chain the validator has stopped voting. Set balance alerts in days of runway, not as a fixed amount.</p>
-<p>If the vote authority is a different key from the identity, each vote carries two signatures and costs twice as much.</p>
-<div class="note warn">In 2026, testnet and then mainnet replaced Tower BFT with Alpenglow. Votes became messages sent directly between validators instead of transactions. The per-vote fee went away, replaced by a fixed admission fee taken from the vote account each epoch. The simulated cluster in the labs still models Tower BFT's per-vote fees.</div>`),
-        widget: voteCost,
-        quiz: [
-          { q: LL('Tower BFT 下，投票交易的手续费由谁支付？', 'Under Tower BFT, who pays the fee for a vote transaction?'), options: [LL('vote account', 'The vote account'), LL('identity', 'The identity'), LL('委托人', 'The delegators'), LL('当前 leader', 'The current leader')], answer: 1, why: LL('identity 是投票交易的付费方，所以它的余额会持续下降。', 'The identity is the fee payer of each vote, so its balance keeps falling.') },
-          { q: LL('identity 有 9 SOL，每天花 1.1 SOL，余额告警设在 0.1 SOL。问题在哪里？', 'The identity holds 9 SOL and spends 1.1 SOL a day. The balance alert is set at 0.1 SOL. What is wrong?'), options: [LL('没有问题', 'Nothing'), LL('告警只比余额耗尽早两个小时左右', 'It fires only about two hours before the balance runs out'), LL('告警会过于频繁', 'It will fire too often'), LL('余额无法监控', 'Balances cannot be monitored')], answer: 1, why: LL('0.1 SOL 大约是两小时的投票费用。按剩余天数设阈值，才有处理的时间。', '0.1 SOL is about two hours of votes. Thresholds in days of runway leave time to act.') },
-        ],
-      },
-      {
-        title: LL('Tower BFT 与锁定期', 'Tower BFT and lockouts'),
-        body: LL(
-          `<p>当一个块没有及时传到所有节点，或者两个 leader 接在不同的父块上出块时，就会出现分叉。每个验证者必须选定一个分叉，并且坚持足够长的时间，让整个集群收敛。Tower BFT 用<b>锁定期</b>（lockout）来保证这一点。</p>
-<p>验证者对某个 slot 投票后，承诺在 2 个 slot 内不给冲突的分叉投票。之后在同一分叉上每多投一票，下面那些票的锁定期就会翻倍，最早的票依次锁定 4、8、16……个 slot。投票栈最多保存 31 票；第 32 票到来时，最底下的一票出栈，成为这个验证者的 <b>root</b>，对它来说已不可逆。</p>
-<p>要改投另一个分叉，必须等被放弃分叉上的每一票都过期。投入越深，等待越久。这让在两个分叉之间摇摆的代价非常高。投票栈（tower）会保存到磁盘上的 <b>tower 文件</b>里，重启之后锁定仍然有效。</p>
+          `<p>Alpenglow 用 <b>Votor</b> 取代了 TowerBFT。Proof of History 仍然保留。负责传播区块、用来替代 Turbine 的 <b>Rotor</b> 计划在后续阶段上线，目前还没有启用。主网在 2026 年 10 月激活了 Alpenglow，testnet 和 devnet 更早。</p>
+<p>投票不再是交易。验证者把轻量的投票消息直接发给一组按质押加权选出的节点，这些投票用 <b>BLS 签名</b>聚合成<b>证书</b>。每个 slot 的结果由证书决定：</p>
+<ul><li><b>快速终结</b>：第一轮就有至少 80% 的质押支持这个块，slot 立即终结。</li>
+<li><b>慢路径</b>：至少 60% 的质押支持，块先被公证（notarization）；第二轮再有至少 60%，slot 终结。</li>
+<li><b>skip 证书</b>：至少 60% 的质押投票跳过这个 slot。</li></ul>
+<p>两条路径同时进行。终结的目标时间约为 100–150 ms，而在 TowerBFT 下终结一个块约需 12.8 秒。</p>
+<p>leader 的块在本地超时之前没有送到，验证者就投 skip 票。离线 leader 的 4 个 slot 因此很快变成 skip 证书，链不会停下来等它。</p>
+<p>容错模型称为"20+20"：恶意质押不超过 20% 时安全性成立，另外再有至多 20% 的质押离线，活性仍然成立。</p>
+<p>投票不再进入区块，所以把投票交易计入在内的 TPS 数字大幅下降，而用户的实际活动并没有变化。</p>
 <h3>一个 identity，只能有一台机器投票</h3>
-<p>两台机器运行同一个 identity，会各自维护一个 tower，签出相互违反锁定的投票，这就是双签（equivocation）。目前协议不会自动罚没质押，但这些矛盾的投票会公开留在链上，可能扰乱集群，委托计划也会把这样的验证者移出名单。<code>--require-tower</code> 让验证者在没有已保存 tower 的情况下拒绝启动或拒绝 <code>set-identity</code>，防止备用机带着空白的投票历史接管 identity。</p>
-<div class="note warn">Alpenglow 用新的投票协议 Votor 取代了 Tower BFT，靠证书而不是锁定期来确认区块。在运行 Alpenglow 的集群上，tower 文件不再起作用。上面那条规则不变：一个 identity 绝不能同时在两台机器上运行。</div>`,
-          `<p>Forks happen when a block does not reach every node in time, or when two leaders build on different parents. Each validator has to choose a fork and stay with it long enough for the cluster to converge. Tower BFT enforces this with <b>lockouts</b>.</p>
-<p>A vote for a slot commits the validator not to vote for a conflicting fork for 2 slots. Each further vote on the same fork doubles the lockout of the votes beneath it, so the oldest votes become locked for 4, 8, 16 … slots. The vote stack holds up to 31 votes. When a 32nd arrives, the bottom vote leaves the stack and becomes the validator's <b>root</b>, final as far as that validator is concerned.</p>
-<p>Switching to another fork means waiting until every vote on the abandoned fork has expired. The deeper the commitment, the longer the wait, which makes swinging between forks very expensive. The vote stack, the tower, is saved to disk in the <b>tower file</b>, so lockouts survive a restart.</p>
+<p>两台机器运行同一个 identity，会为同一个 slot 签出相互矛盾的票。这就是双签（equivocation），任何时候都不能发生。验证者把共识状态保存在 ledger 目录下的 <code>vote_history-&lt;IDENTITY&gt;.bin</code> 中，它取代了 TowerBFT 的 tower 文件。<code>agave-validator set-identity</code> 默认要求这个文件存在，防止备用机带着空白的投票历史接管 identity。</p>`,
+          `<p>Alpenglow replaced TowerBFT with <b>Votor</b>. Proof of History stays in the system. <b>Rotor</b>, which is to replace Turbine for block propagation, is planned for a later phase and is not live. Mainnet activated Alpenglow in October 2026, after testnet and devnet.</p>
+<p>Votes are no longer transactions. Validators send lightweight vote messages directly to a stake-weighted set of peers, and the votes are aggregated with <b>BLS signatures</b> into <b>certificates</b>. Certificates decide each slot:</p>
+<ul><li><b>Fast finalisation</b>: at least 80% of stake supports the block in the first round, and the slot is final at once.</li>
+<li><b>Slow path</b>: at least 60% of stake supports it and the block is notarised; a second round at 60% or more finalises the slot.</li>
+<li><b>Skip certificate</b>: at least 60% of stake votes to skip the slot.</li></ul>
+<p>Both paths run concurrently. Finality targets about 100–150 ms, compared with about 12.8 s to finalise a block under TowerBFT.</p>
+<p>When a leader's block does not arrive before a local timeout, validators send a skip vote. An offline leader's four slots therefore collapse quickly into skip certificates, and the chain does not wait for it.</p>
+<p>The resilience model is called "20+20": safety holds with up to 20% adversarial stake, and liveness holds with up to another 20% offline.</p>
+<p>Votes no longer go into blocks, so TPS figures that counted vote transactions dropped sharply even though user activity did not change.</p>
 <h3>One identity, one voting machine</h3>
-<p>Two machines running the same identity each keep their own tower and sign votes that break each other's lockouts. That is equivocation. The protocol does not slash stake for it automatically today, but the conflicting votes stay on chain as evidence, they can disrupt the cluster, and delegation programs drop validators that do it. <code>--require-tower</code> makes the validator refuse to start, or refuse <code>set-identity</code>, without a saved tower, so a standby cannot take over the identity with an empty vote history.</p>
-<div class="note warn">Alpenglow replaced Tower BFT with a new vote protocol, Votor, which finalises blocks with certificates instead of lockouts. On clusters that run it, the tower file no longer applies. The rule above stays: one identity never runs on two machines at once.</div>`),
-        widget: tower,
+<p>Two machines running the same identity sign conflicting votes for the same slots. That is equivocation, and it must never happen. The validator keeps its consensus state in <code>vote_history-&lt;IDENTITY&gt;.bin</code> in the ledger directory, which replaces TowerBFT's tower file. <code>agave-validator set-identity</code> requires that file by default, so a standby cannot take over the identity with an empty vote history.</p>`),
+        widget: votor,
+        after: LL('<div class="note">组件是简化模型：它只区分按时投票的质押、投 skip 的质押和离线的质押，不包含 Votor 的全部规则。</div>', '<div class="note">The widget is a simplified model. It separates stake that votes in time, stake that votes skip and stake that is offline, and leaves out the rest of Votor\'s rules.</div>'),
         quiz: [
-          { q: LL('一票的确认数（confirmation count）是 3，它锁定多少个 slot？', 'A vote has a confirmation count of 3. How many slots is it locked out for?'), options: [LL('3', '3'), LL('6', '6'), LL('8', '8'), LL('16', '16')], answer: 2, why: LL('锁定期是 2 的确认数次方：2³ = 8。', 'Lockout is 2 to the power of the confirmation count: 2³ = 8 slots.') },
-          { q: LL('备用机接管质押 identity 时为什么要加 --require-tower？', 'Why does a standby use --require-tower when taking over the staked identity?'), options: [LL('加快追块', 'It speeds up catch-up'), LL('没有已保存的投票历史就拒绝投票，避免投出违反之前锁定的票', 'It refuses to vote without the saved vote history, preventing votes that break earlier lockouts'), LL('从 known validator 下载 tower', 'It downloads the tower from a known validator'), LL('RPC 需要它', 'RPC needs it')], answer: 1, why: LL('没有 tower，新机器不知道自己被锁在哪些分叉上。', 'Without the tower the new machine does not know which forks it is locked out of.') },
+          { q: LL('第一轮有 85% 的质押投票支持一个块，结果是？', '85% of stake supports a block in the first round. What happens?'), options: [LL('快速终结', 'Fast finalisation'), LL('先公证，第二轮再终结', 'Notarised, then finalised in a second round'), LL('skip 证书', 'A skip certificate'), LL('等 32 个 slot', 'It waits 32 slots')], answer: 0, why: LL('第一轮达到 80% 即快速终结。', 'Reaching 80% in the first round finalises the slot at once.') },
+          { q: LL('有 70% 的质押支持一个块，其余离线。结果是？', '70% of stake supports a block and the rest is offline. What happens?'), options: [LL('快速终结', 'Fast finalisation'), LL('慢路径：公证之后，第二轮 60% 终结', 'Slow path: notarised, then finalised by a second round at 60%'), LL('skip 证书', 'A skip certificate'), LL('链停止', 'The chain stops')], answer: 1, why: LL('60% 到 80% 之间走慢路径。', 'Between 60% and 80% the slow path applies.') },
+          { q: LL('一个 leader 离线了，它的 4 个 slot 会怎样？', 'A leader is offline. What happens to its four slots?'), options: [LL('集群等它恢复', 'The cluster waits for it'), LL('很快变成 4 张 skip 证书，链继续前进', 'They quickly become four skip certificates and the chain moves on'), LL('由下一个 leader 补出这 4 个块', 'The next leader produces those blocks'), LL('这个 epoch 作废', 'The epoch is void')], answer: 1, why: LL('块在超时之前没有送到，验证者投 skip；达到 60% 就形成 skip 证书。', 'No block arrives before the timeout, validators vote skip, and 60% forms a skip certificate.') },
+          { q: LL('在 Alpenglow 下，哪个文件取代了 tower 文件？', 'Under Alpenglow, which file replaces the tower file?'), options: [LL('vote_history-<IDENTITY>.bin', 'vote_history-<IDENTITY>.bin'), LL('admin.rpc', 'admin.rpc'), LL('genesis.bin', 'genesis.bin'), LL('不需要任何文件', 'No file is needed')], answer: 0, why: LL('set-identity 默认要求这个文件。', 'set-identity requires this file by default.') },
+        ],
+      },
+      {
+        title: LL('准入费与 epoch 边界', 'The admission ticket and the epoch boundary'),
+        body: LL(
+          `<p>按票收取的手续费取消之后，取而代之的是<b>验证者准入费</b>（Validator Admission Ticket，SIMD-0357，按 SIMD-0525 随 slot 时长调整）。每个入选的验证者每个 epoch 从 <b>vote account</b> 付一次，费用被销毁。200 ms 的 slot 下约为 <b>0.8 SOL</b>，vote account 还必须另外保留免租金额。</p>
+<p>关键在时间。bank 进入 epoch N 的那一刻，运行时选出 epoch N+1 的验证者集合，并从每个入选的 vote account 扣除准入费。此刻余额低于准入费加免租金额的 vote account，被排除在 N+1 之外：整个 epoch 不能投票、不能出块、没有奖励。N 开始之后再充值，最早只能赶上 N+2。vote account 必须在边界<b>之前</b>充好。</p>
+<p>几条细节：</p>
+<ul><li>vote account 中待发给委托人的奖励不计入准入余额。</li>
+<li>任何人都能向 vote account 存钱：<code>solana transfer &lt;VOTE_ACCOUNT&gt; &lt;AMOUNT&gt;</code>。只有 withdraw authority 能取出。</li>
+<li>可以让出块收入直接进入 vote account：<code>solana vote-update-commission-collector &lt;VOTE_ACCOUNT&gt; block-revenue &lt;VOTE_ACCOUNT&gt; &lt;AUTHORIZED_WITHDRAWER_KEYPAIR&gt;</code>。出块收入的变更在 E+2 生效，通胀奖励的变更在 E+1 生效。</li>
+<li>准入失败有三个原因：找不到 vote account、没有 BLS 公钥、余额不足。admin RPC 方法 <code>validatorAdmissionTicketStatus</code> 提前两个 epoch 报告准入资格。</li></ul>
+<p>告警据此设置：vote account 低于 <b>5 SOL</b> 即为 critical。5 SOL 够付好几个边界的准入费，告警响起时还有几天时间。identity 另有自己的下限 <b>9 SOL</b>。</p>`,
+          `<p>With the per-vote fee gone, its place is taken by the <b>Validator Admission Ticket</b> (SIMD-0357, scaled to the slot time by SIMD-0525). Every admitted validator pays it from its <b>vote account</b> once per epoch, and the fee is burned. At 200 ms slots it is about <b>0.8 SOL</b>, and the vote account must also keep its rent-exempt minimum.</p>
+<p>The timing is what matters. When the bank crosses into epoch N, the runtime picks the validator set for epoch N+1 and debits the ticket from each admitted vote account. A vote account below the ticket plus rent at that moment is left out of N+1: no voting, no block production and no rewards for that whole epoch. A top-up made after N has started counts from N+2 at the earliest. The vote account has to be funded <b>before</b> the boundary.</p>
+<p>Some details:</p>
+<ul><li>Pending delegator rewards held in the vote account do not count towards the ticket.</li>
+<li>Anyone can deposit to a vote account: <code>solana transfer &lt;VOTE_ACCOUNT&gt; &lt;AMOUNT&gt;</code>. Only the withdraw authority can take SOL out.</li>
+<li>Block revenue can go straight to the vote account: <code>solana vote-update-commission-collector &lt;VOTE_ACCOUNT&gt; block-revenue &lt;VOTE_ACCOUNT&gt; &lt;AUTHORIZED_WITHDRAWER_KEYPAIR&gt;</code>. Block revenue changes take effect at E+2, inflation reward changes at E+1.</li>
+<li>Admission fails for one of three reasons: vote account not found, no BLS pubkey, or insufficient funds. The admin RPC method <code>validatorAdmissionTicketStatus</code> reports eligibility two epochs ahead.</li></ul>
+<p>Alerts follow from this: a vote account below <b>5 SOL</b> is critical. 5 SOL covers several boundaries, so the page leaves days to act. The identity has its own floor of <b>9 SOL</b>.</p>`),
+        widget: admission,
+        quiz: [
+          { q: LL('准入费从哪个账户扣？', 'Which account pays the admission ticket?'), options: [LL('identity', 'The identity'), LL('vote account', 'The vote account'), LL('委托人的 stake account', 'The delegators\' stake accounts'), LL('当前 leader', 'The current leader')], answer: 1, why: LL('准入费每个 epoch 从 vote account 扣一次。给 identity 充值不影响准入。', 'The ticket comes out of the vote account once per epoch. Funding the identity does nothing for admission.') },
+          { q: LL('bank 进入 epoch N 时 vote account 余额不足，一小时后补足。验证者最早在哪个 epoch 重新投票？', 'The vote account was short when the bank entered epoch N, and it was topped up an hour later. In which epoch can the validator vote again at the earliest?'), options: [LL('N', 'N'), LL('N+1', 'N+1'), LL('N+2', 'N+2'), LL('N+3', 'N+3')], answer: 2, why: LL('进入 N 时已决定缺席 N+1。N 期间的充值在进入 N+1 时被计算，赶上 N+2。', 'Entering N already left it out of N+1. A top-up during N is counted on entering N+1, which admits it to N+2.') },
+          { q: LL('vote account 有 1.2 SOL，其中 0.5 SOL 是待发给委托人的奖励。下一个边界能入选吗？', 'A vote account holds 1.2 SOL, of which 0.5 SOL are pending delegator rewards. Is it admitted at the next boundary?'), options: [LL('能，1.2 SOL 足够', 'Yes, 1.2 SOL is enough'), LL('不能，只有 0.7 SOL 计入，低于准入费加免租金额', 'No: only 0.7 SOL counts, which is below the ticket plus rent'), LL('能，奖励会先发放', 'Yes, the rewards are paid first'), LL('要看 identity 余额', 'It depends on the identity balance')], answer: 1, why: LL('待发给委托人的奖励不计入。0.7 SOL 小于约 0.827 SOL。', 'Pending delegator rewards do not count. 0.7 SOL is less than about 0.827 SOL.') },
         ],
       },
       {
         title: LL('delinquent、skip rate 与 credits', 'Delinquency, skip rate and credits'),
         body: LL(
-          `<p>集群通过投票来评价验证者。最后一张落地的票落后链头超过 128 个 slot（400 ms 下约 51 秒）时，RPC 节点会把它报告为 <b>delinquent</b>。delinquent 的验证者没有收益，质押池也可能撤走委托。</p>
-<p>每一票都会挣到 <b>vote credits</b>。按照 timely vote credits（TVC）规则，在所投 slot 之后 2 个 slot 内落地的票拿满 16 分，每再晚一个 slot 少 1 分，最低 1 分。通胀奖励按"质押 × credits"分配，所以一个反应慢的验证者，即使从不 delinquent，也会少拿奖励。运维看的是本 epoch 自己的 credits 与集群中位数之比。</p>
-<p><b>skip rate</b> 是验证者自己的 leader slot 中，没有块进入集群主链的比例。被跳过的 slot 损失的是这些 slot 的出块收入，与 vote credits 无关。</p>`,
-          `<p>The cluster judges a validator by its votes. When its last landed vote is more than 128 slots behind the tip, about 51 seconds at 400 ms, RPC nodes report it as <b>delinquent</b>. A delinquent validator earns nothing, and stake pools may withdraw their delegation.</p>
-<p>Each vote earns <b>vote credits</b>. Under timely vote credits (TVC), a vote that lands within 2 slots of the slot it votes for earns the full 16 credits; each slot later earns one fewer, down to 1. Inflation rewards are shared by stake times credits, so a slow validator earns less even if it is never delinquent. Operators watch their credits for the epoch against the cluster median.</p>
-<p><b>Skip rate</b> is the share of the validator's own leader slots that produced no block on the cluster's chain. Skipped slots lose the block income of those slots. They do not affect vote credits.</p>`),
+          `<p>集群通过投票来评价验证者。<code>getVoteAccounts</code> 仍把验证者分成 <code>current</code> 和 <code>delinquent</code> 两个列表。最后一票落后链头超过 128 个 slot 时，RPC 节点把它列入 delinquent；200 ms 的 slot 下这只有约 26 秒。delinquent 的验证者挣不到投票奖励，质押池也可能撤走委托。</p>
+<p><b>skip rate</b> 是验证者自己的 leader slot 中没有出块的比例。在 Alpenglow 下，离线 leader 的窗口很快变成 skip 证书，集群不会停下来等。被跳过的 slot 损失的是出块收入。</p>
+<p><b>vote credits</b> 的含义变了。迁移之后，vote account 的 epoch credits 字段记录的是奖励 lamports，不再是票数；运行时在迁移的那个 epoch 写入了一行标记记录。有些 delinquent 的 vote account 显示 u64::MAX 这个标记值，把它当成 int64 解析的旧工具因此出错。每个 epoch 的投票奖励总额在 epoch 开始时就已确定，验证者的表现只影响它分到的份额。</p>
+<p>监控仍可以把本 epoch 的 credits 与集群中位数相比，判断自己是否在正常投票，但读数的单位已经不是票数。</p>`,
+          `<p>The cluster judges a validator by its votes. <code>getVoteAccounts</code> still has a <code>current</code> list and a <code>delinquent</code> list. When a validator's last vote is more than 128 slots behind the tip, RPC nodes list it as delinquent; at 200 ms that is only about 26 seconds. A delinquent validator earns no vote rewards, and stake pools may withdraw their delegation.</p>
+<p><b>Skip rate</b> is the share of the validator's own leader slots that produced no block. Under Alpenglow an offline leader's window quickly becomes skip certificates, and the cluster does not wait. Skipped slots lose their block revenue.</p>
+<p><b>Vote credits</b> changed meaning. After the migration, a vote account's epoch credits field counts reward lamports rather than votes, and the runtime wrote a sentinel row at the migration epoch. Some delinquent vote accounts show a u64::MAX sentinel, and older tools that parsed it as an int64 broke. The vote reward pool for an epoch is fixed at the start of the epoch; a validator's performance only changes its share.</p>
+<p>Monitoring can still compare this epoch's credits with the cluster median to tell whether the validator is voting normally, but the unit is no longer votes.</p>`),
         widget: delinquency,
         quiz: [
           { q: LL('一个验证者的最后一票落后链头 200 个 slot，RPC 会怎么报告？', 'A validator\'s last vote is 200 slots behind the tip. What does RPC report?'), options: [LL('正常', 'Healthy'), LL('delinquent', 'Delinquent'), LL('skipped', 'Skipped'), LL('rooted', 'Rooted')], answer: 1, why: LL('超过 128 个 slot 即为 delinquent。', 'More than 128 slots behind means delinquent.') },
-          { q: LL('投票延迟 5 个 slot，按 TVC 每票能拿多少 credits？', 'Votes land 5 slots late. How many credits does each earn under TVC?'), options: [LL('16', '16'), LL('13', '13'), LL('11', '11'), LL('5', '5')], answer: 1, why: LL('2 个 slot 之内满分 16，超出 3 个 slot 扣 3 分：16 − 3 = 13。', 'Full credit up to 2 slots; 3 slots beyond that cost 3 credits: 16 − 3 = 13.') },
-          { q: LL('下面哪一项会减少通胀奖励？', 'Which of these reduces inflation rewards?'), options: [LL('skip rate 高', 'A high skip rate'), LL('vote credits 低', 'Low vote credits'), LL('RPC 负载高', 'A high RPC load'), LL('ledger 很大', 'A large ledger')], answer: 1, why: LL('通胀奖励按质押和 credits 分配。跳过的 leader slot 损失的是出块收入。', 'Inflation rewards follow stake and credits. Skipped leader slots lose block income instead.') },
+          { q: LL('200 ms 的 slot 下，128 个 slot 大约是多久？', 'At 200 ms slots, about how long are 128 slots?'), options: [LL('约 13 秒', 'About 13 s'), LL('约 26 秒', 'About 26 s'), LL('约 51 秒', 'About 51 s'), LL('约 2 分钟', 'About 2 minutes')], answer: 1, why: LL('128 × 0.2 秒 = 25.6 秒。400 ms 时是 51 秒。', '128 × 0.2 s = 25.6 s. At 400 ms it was 51 s.') },
+          { q: LL('迁移到 Alpenglow 之后，vote account 的 epoch credits 字段记录的是什么？', 'After the move to Alpenglow, what does a vote account\'s epoch credits field count?'), options: [LL('票数', 'Votes'), LL('奖励 lamports', 'Reward lamports'), LL('跳过的 slot', 'Skipped slots'), LL('质押数量', 'Stake')], answer: 1, why: LL('字段名没变，含义变了。按票数解读它的工具需要更新。', 'The field kept its name and changed its meaning. Tools that read it as votes need updating.') },
         ],
       },
       {
         title: LL('质押、佣金与奖励', 'Stake, commission and rewards'),
         body: LL(
           `<p>持币人通过 <b>stake account</b> 把 SOL 委托给验证者。每个 stake account 有自己的 stake authority 和 withdraw authority，由委托人掌握。验证者从头到尾都控制不了委托进来的 SOL。</p>
-<p>质押变动在 epoch 边界生效。新委托在下一个 epoch 开始前处于<b>激活中</b>；解除委托的质押在边界之前仍然有效，过了边界才能取回。网络限制每个 epoch 能激活或解除的质押总量，所以很大的变动可能要跨好几个 epoch。</p>
-<p>每个 epoch 开始时，网络按各验证者上一个 epoch 的 credits 和质押计算通胀奖励，在新 epoch 的头一批区块中发到各个 stake account。验证者的<b>佣金</b>是从委托人通胀奖励中抽取的比例，进入 vote account。</p>
-<p>验证者当 leader 时，还能拿到自己区块的交易费，默认进入 identity 账户。很多验证者运行 Jito-Solana，这是 Agave 的一个分支，可以接收搜索者附带小费的交易包（MEV）。小费每个 epoch 按验证者另设的 MEV 佣金，在验证者和委托人之间分配。</p>`,
+<p>质押变动在 epoch 边界生效，现在大约每天一次。新委托在下一个 epoch 开始前处于<b>激活中</b>；解除委托的质押在边界之前仍然有效，过了边界才能取回。网络限制每个 epoch 能激活或解除的质押总量，所以很大的变动可能要跨好几个 epoch。</p>
+<p>每个 epoch 开始时，网络结算上一个 epoch 的奖励，发到各个 stake account。验证者的<b>佣金</b>是从委托人通胀奖励中抽取的比例，进入 vote account。佣金只能在 epoch 的前半段修改。</p>
+<p>验证者当 leader 时还有出块收入，默认进入 identity 账户。用 <code>vote-update-commission-collector</code> 可以把它改为进入 vote account，让准入费自动得到补充。很多验证者运行 Jito-Solana，这是 Agave 的一个分支，可以接收搜索者附带小费的交易包（MEV）。小费按验证者另设的 MEV 佣金，在验证者和委托人之间分配。</p>`,
           `<p>Holders delegate SOL to a validator through <b>stake accounts</b>. Each stake account has its own stake authority and withdraw authority, held by the delegator. The validator never controls delegated SOL.</p>
-<p>Stake changes take effect at epoch boundaries. A new delegation is <b>activating</b> until the next epoch begins. Deactivating stake stays active until the boundary and can be withdrawn after it. The network limits how much stake can activate or deactivate per epoch, so very large changes can take several epochs.</p>
-<p>At the start of each epoch, the network computes inflation rewards for the previous epoch from each validator's credits and stake, and pays them to the stake accounts over the first blocks of the new epoch. The validator's <b>commission</b> is its share of its delegators' inflation rewards, and it goes to the vote account.</p>
-<p>As leader, a validator also earns the transaction fees of its blocks, paid to the identity account by default. Many validators run Jito-Solana, a fork of Agave that accepts bundles with tips from searchers (MEV). Tips are split each epoch between the validator and its stakers according to a separate MEV commission.</p>`),
+<p>Stake changes take effect at epoch boundaries, now about once a day. A new delegation is <b>activating</b> until the next epoch begins. Deactivating stake stays active until the boundary and can be withdrawn after it. The network limits how much stake can activate or deactivate per epoch, so very large changes can take several epochs.</p>
+<p>At the start of each epoch, the network settles the previous epoch's rewards and pays them to the stake accounts. The validator's <b>commission</b> is its share of its delegators' inflation rewards, and it goes to the vote account. Commission can only be changed in the first half of an epoch.</p>
+<p>As leader, a validator also earns block revenue, paid to the identity account by default. <code>vote-update-commission-collector</code> can send it to the vote account instead, which keeps the admission ticket topped up. Many validators run Jito-Solana, a fork of Agave that accepts bundles with tips from searchers (MEV). Tips are split between the validator and its stakers according to a separate MEV commission.</p>`),
         widget: rewards,
         quiz: [
           { q: LL('在 epoch 700 的一半时委托质押，它什么时候开始挣奖励？', 'Stake is delegated halfway through epoch 700. When does it start earning?'), options: [LL('立刻', 'Immediately'), LL('从 epoch 701 起，第一笔奖励在 epoch 702 开始时发放', 'From epoch 701, with the first reward paid at the start of epoch 702'), LL('7 天之后', 'After 7 days'), LL('从 epoch 700 起追溯计算', 'From epoch 700, backdated')], answer: 1, why: LL('委托在下一个 epoch 生效，这个 epoch 的奖励在再下一个 epoch 开始时发放。', 'Delegation takes effect at the next epoch, and that epoch\'s reward is paid as the following one begins.') },
           { q: LL('10% 的佣金拿走的是什么？', 'What does a 10% commission take?'), options: [LL('委托质押本金的 10%', '10% of the delegated stake'), LL('委托人通胀奖励的 10%，打进 vote account', '10% of the delegators\' inflation rewards, paid to the vote account'), LL('区块交易费的 10%', '10% of block fees'), LL('每笔交易的 10%', '10% of every transaction')], answer: 1, why: LL('佣金只作用于通胀奖励，本金始终在委托人的 stake account 里。', 'Commission applies to inflation rewards. The principal stays in the delegator\'s stake account.') },
+          { q: LL('运维在 epoch 进行到 70% 时想改佣金，会怎样？', 'An operator wants to change the commission when the epoch is 70% through. What happens?'), options: [LL('立即生效', 'It takes effect at once'), LL('被拒绝，佣金只能在 epoch 的前半段修改', 'It is refused; commission can only change in the first half of an epoch'), LL('需要委托人同意', 'Delegators must approve it'), LL('需要 identity 签名', 'The identity must sign it')], answer: 1, why: LL('等下一个 epoch 的前半段再改。', 'Wait for the first half of the next epoch.') },
         ],
       },
       {
         title: LL('快照与追块', 'Snapshots and catch-up'),
         body: LL(
           `<p>新启动或重启的验证者不会从创世块开始重放，而是加载一个<b>快照</b>：某个 slot 时刻的完整账户状态。<b>全量快照</b>包含全部状态，每隔数万个 slot 生成一次；<b>增量快照</b>只包含上一个全量快照之后的变化，生成得频繁得多。用全量快照加上一份较新的增量快照启动，需要重放的差距就很小。</p>
-<p>启动时 Agave 先找本地快照。如果它比其他节点提供的最新快照落后超过 <code>--maximum-local-snapshot-age</code>（默认 2,500 个 slot），就下载新的。<code>--known-validator</code> 加上 <code>--only-known-rpc</code>，把下载来源限制在你信任的节点上：快照里的状态会被直接接受，节点不会自己重新推导一遍。</p>
-<p><code>--no-snapshot-fetch</code> 强制使用本地快照。短暂重启时它省去一次下载；长时间停机之后，它会留下一大段差距，只能靠 repair 从其他节点补，而 repair 的速度可能还赶不上集群出块。</p>
+<p>启动时 Agave 先找本地快照。如果它比其他节点提供的最新快照落后超过 <code>--maximum-local-snapshot-age</code>（默认 2,500 个 slot，200 ms 下约 8 分钟），就下载新的。<code>--known-validator</code> 加上 <code>--only-known-rpc</code>，把下载来源限制在你信任的节点上：快照里的状态会被直接接受，节点不会自己重新推导一遍。</p>
+<p><code>--no-snapshot-fetch</code> 强制使用本地快照。短暂重启时它省去一次下载；长时间停机之后，它会留下一大段差距，只能靠 repair 从其他节点补，而 repair 的速度可能还赶不上集群出块。slot 缩短到 200 ms 之后，同样的停机时间对应的 slot 数翻了一倍：停机一天就是整整一个 epoch。</p>
 <p><code>solana catchup --our-localhost</code> 把本节点与集群对比，报告它是在追赶还是在落后：</p>
 <pre class="term-snip">$ solana catchup --our-localhost
-8vRtQm4K… has 2310 slot(s) behind (us:313190110 them:313192420), our node is gaining at 25.0 slots/second
-8vRtQm4K… has caught up (us:313192530 them:313192530)</pre>`,
+8vRtQm4K… has 2310 slot(s) behind (us:488390110 them:488392420), our node is gaining at 25.0 slots/second
+8vRtQm4K… has caught up (us:488392530 them:488392530)</pre>`,
           `<p>A new or restarted validator does not replay the chain from genesis. It loads a <b>snapshot</b>: the full account state at one slot. A <b>full snapshot</b> holds everything and is produced every several tens of thousands of slots. An <b>incremental snapshot</b> holds only the changes since the last full one and is produced much more often. Starting from a full snapshot plus a recent incremental one leaves only a short gap to replay.</p>
-<p>At startup Agave looks for a local snapshot. If it is further behind the newest snapshot that peers offer than <code>--maximum-local-snapshot-age</code> (2,500 slots by default), it downloads a new one. <code>--known-validator</code> with <code>--only-known-rpc</code> limits downloads to nodes you trust: the state in a snapshot is accepted as it is, not re-derived by the node.</p>
-<p><code>--no-snapshot-fetch</code> forces the local snapshot. After a short restart it saves a download. After a long outage it leaves a large gap that can only be filled by repair from peers, which may be slower than the cluster produces slots.</p>
+<p>At startup Agave looks for a local snapshot. If it is further behind the newest snapshot that peers offer than <code>--maximum-local-snapshot-age</code> (2,500 slots by default, about 8 minutes at 200 ms), it downloads a new one. <code>--known-validator</code> with <code>--only-known-rpc</code> limits downloads to nodes you trust: the state in a snapshot is accepted as it is, not re-derived by the node.</p>
+<p><code>--no-snapshot-fetch</code> forces the local snapshot. After a short restart it saves a download. After a long outage it leaves a large gap that can only be filled by repair from peers, which may be slower than the cluster produces slots. With 200 ms slots, the same outage spans twice as many slots as before: a day offline is a whole epoch.</p>
 <p><code>solana catchup --our-localhost</code> compares the node with the cluster and reports whether it is gaining or falling behind:</p>
 <pre class="term-snip">$ solana catchup --our-localhost
-8vRtQm4K… has 2310 slot(s) behind (us:313190110 them:313192420), our node is gaining at 25.0 slots/second
-8vRtQm4K… has caught up (us:313192530 them:313192530)</pre>`),
+8vRtQm4K… has 2310 slot(s) behind (us:488390110 them:488392420), our node is gaining at 25.0 slots/second
+8vRtQm4K… has caught up (us:488392530 them:488392530)</pre>`),
         widget: snapshots,
         quiz: [
-          { q: LL('验证者停机两天后带着 --no-snapshot-fetch 重启，最可能的结果是？', 'A validator was offline for two days and restarts with --no-snapshot-fetch. What is the likely result?'), options: [LL('几秒钟就追上', 'It catches up in seconds'), LL('加载旧的本地快照，一边 repair 一边越落越远', 'It loads an old local snapshot and falls further behind while repairing'), LL('拒绝启动', 'It refuses to start'), LL('照样下载新快照', 'It downloads a fresh snapshot anyway')], answer: 1, why: LL('两天的差距只能靠 repair 补，速度跟不上集群。', 'Two days of slots can only come from repair, which cannot keep up with the cluster.') },
+          { q: LL('验证者停机两天后带着 --no-snapshot-fetch 重启，最可能的结果是？', 'A validator was offline for two days and restarts with --no-snapshot-fetch. What is the likely result?'), options: [LL('几秒钟就追上', 'It catches up in seconds'), LL('加载旧的本地快照，一边 repair 一边越落越远', 'It loads an old local snapshot and falls further behind while repairing'), LL('拒绝启动', 'It refuses to start'), LL('照样下载新快照', 'It downloads a fresh snapshot anyway')], answer: 1, why: LL('两天约 864,000 个 slot，只能靠 repair 补，速度跟不上集群。', 'Two days is about 864,000 slots. They can only come from repair, which cannot keep up with the cluster.') },
           { q: LL('为什么要把 --known-validator 和 --only-known-rpc 一起用？', 'Why use --known-validator together with --only-known-rpc?'), options: [LL('获得更多质押', 'To attract more stake'), LL('只从可信节点下载快照，因为节点会直接采信快照中的状态', 'To download snapshots only from trusted nodes, because the node accepts snapshot state as given'), LL('加快 gossip', 'To speed up gossip'), LL('决定 leader 顺序', 'To choose the leader order')], answer: 1, why: LL('快照决定了节点的起点状态，来源必须可信。', 'A snapshot sets the node\'s starting state, so its source must be trusted.') },
         ],
       },
@@ -464,13 +515,14 @@
   /* ---------- step 2: build a testnet validator on a new host ---------- */
   const H = () => S.networks.solana.helpers;
   const ID = '8vRtQm4KcZ7wLx2NbYp9HsJd3Fa6Ue5GkT1nWq7XzMpA', VOTE = 'Vt3kPq8WmZ2xRc6NbLd9Hf5Jy7Ts4Ua1GeK3nQrW8sMx', WD = 'Wd9pLq4XkT7mVz2NcR8bHs5Jy3Fa6GeU1oKt4Pw7Qn2Y';
+  const KP = '/home/sol/validator-keypair.json';
   const SYSCTL = String.raw`printf 'net.core.rmem_default = 134217728\nnet.core.rmem_max = 134217728\nnet.core.wmem_default = 134217728\nnet.core.wmem_max = 134217728\nvm.max_map_count = 1000000\nfs.nr_open = 1000000\n' > /etc/sysctl.d/21-agave-validator.conf`;
   const SCRIPT = String.raw`printf '#!/bin/bash\nexec agave-validator \\\n  --identity /home/sol/validator-keypair.json \\\n  --vote-account /home/sol/vote-account-keypair.json \\\n  --known-validator 5D1fNXzvv5NjV1ysLjirC4WY92RNsVH18vjmcszZd8on \\\n  --known-validator dv1ZAGvdsz5hHLwWXsVnM94hWf1pjbKVau1QVkaMJ92 \\\n  --only-known-rpc \\\n  --entrypoint entrypoint.testnet.solana.com:8001 \\\n  --entrypoint entrypoint2.testnet.solana.com:8001 \\\n  --expected-genesis-hash 4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY \\\n  --ledger /mnt/ledger \\\n  --accounts /mnt/accounts \\\n  --limit-ledger-size \\\n  --dynamic-port-range 8000-8020 \\\n  --rpc-port 8899 \\\n  --private-rpc \\\n  --wal-recovery-mode skip_any_corrupted_record \\\n  --log -\n' > /home/sol/bin/validator.sh`;
   const UNIT = String.raw`printf '[Unit]\nDescription=Agave validator (testnet)\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=sol\nLimitNOFILE=1000000\nLimitMEMLOCK=2000000000\nRestart=on-failure\nRestartSec=5\nExecStart=/home/sol/bin/validator.sh\n\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/agave-validator.service`;
   const c = s => `<code>${S.esc(s)}</code>`;
   const node = w => w.nodes['sol-new'];
   const kpOn = (w, h, p) => { const f = S.fsGet(h, p); return f && typeof f.c === 'string' ? H().pubkeyOf(w, f.c) : null; };
-  const serverId = w => kpOn(w, node(w), '/home/sol/validator-keypair.json');
+  const serverId = w => kpOn(w, node(w), KP);
   const laptopKeys = w => Object.keys(w.laptop.fs).filter(p => !['/home/ops/funding-testnet.json', '/home/ops/.config/solana/id.json'].includes(p)).map(p => kpOn(w, w.laptop, p)).filter(Boolean);
   const scriptOk = w => {
     const n = node(w), f = S.fsGet(n, '/home/sol/bin/validator.sh');
@@ -481,19 +533,19 @@
   const svcOf = w => node(w).services['agave-validator'];
 
   S.registerScenario({
-    id: 'sol-run', network: 'solana', module: LL('Solana 验证者运维', 'Solana validator operations'), lab: 'R1', difficulty: 1, minutes: 25,
+    id: 'sol-run', network: 'solana', module: LL('Solana 验证者运维', 'Solana validator operations'), lab: 'R1', difficulty: 1, minutes: 30,
     title: LL('从零搭建 testnet 验证者', 'Build a testnet validator from scratch'),
-    tagline: LL('在一台全新的 Ubuntu 主机上搭起 Agave testnet 验证者，从内核调优一直到第一张选票。', 'Bring up an Agave testnet validator on a new Ubuntu host, from kernel tuning to the first vote.'),
+    tagline: LL('在一台全新的 Ubuntu 主机上搭起 Agave testnet 验证者，从内核调优、BLS 公钥和准入费，一直到进入验证者集合后的第一票。', 'Bring up an Agave testnet validator on a new Ubuntu host, from kernel tuning through the BLS key and the admission ticket to its first vote in the validator set.'),
     learn: [
       LL('验证者主机需要什么：网络缓冲区、文件句柄上限、开放端口', 'What a validator host needs: network buffers, file limits, open ports'),
-      LL('哪些钥匙放在服务器上，哪些必须离线', 'Which keys go on the server and which stay offline'),
-      LL('从 vote account 到第一张选票：启动检查、快照下载、追块', 'From vote account to first vote: startup checks, snapshot download, catch-up'),
+      LL('哪些钥匙放在服务器上，哪些必须离线；登记 BLS 公钥', 'Which keys go on the server and which stay offline, and registering the BLS key'),
+      LL('在边界之前给 vote account 充值，等它进入验证者集合，再确认第一票', 'Funding the vote account before the boundary, waiting for admission, and confirming the first vote'),
     ],
     brief: LL(
-      `<p>us-west-2 有一台新装好的 Ubuntu 24.04 主机 <b>sol-new</b>：32 核、384 GiB 内存，系统盘之外还有两块 NVMe，分别挂载在 <code>/mnt/ledger</code> 和 <code>/mnt/accounts</code>。除此之外什么都没装。</p><p>在它上面搭一台 Solana <b>testnet</b> 验证者：调好系统，从发布标签编译 Agave，生成钥匙、创建 vote account，写好启动脚本和 systemd unit，然后让节点跑起来，直到它开始投票。每一步完成后，都会解释它对应的基础知识。</p><p>工作电脑上的说明在 <code>~/NOTES.md</code>。那里的 CLI 默认连接 mainnet，默认 keypair 里是 mainnet 的 SOL。</p><p>模拟集群按 Tower BFT 建模：slot 为 400 ms，每票的手续费由 identity 支付。</p>`,
-      `<p>A new Ubuntu 24.04 host, <b>sol-new</b>, is ready in us-west-2: 32 cores, 384 GiB of memory, and besides the system disk two NVMe drives mounted at <code>/mnt/ledger</code> and <code>/mnt/accounts</code>. Nothing else is installed.</p><p>Build a Solana <b>testnet</b> validator on it: tune the system, build Agave from a release tag, create the keys and the vote account, write the startup script and the systemd unit, and bring the node up until it votes. After each step the lab explains the concept behind it.</p><p>The workstation notes are in <code>~/NOTES.md</code>. The CLI there defaults to mainnet, and its default keypair holds mainnet SOL.</p><p>The simulated cluster models Tower BFT: 400 ms slots, with each vote's fee paid by the identity.</p>`),
-    startAt: '2026-10-14T09:00:00Z',
-    config: { fresh: true, burnPerDay: 1.1 },
+      `<p>us-west-2 有一台新装好的 Ubuntu 24.04 主机 <b>sol-new</b>：32 核、384 GiB 内存，系统盘之外还有两块 NVMe，分别挂载在 <code>/mnt/ledger</code> 和 <code>/mnt/accounts</code>。除此之外什么都没装。</p><p>在它上面搭一台 Solana <b>testnet</b> 验证者。testnet 和 mainnet 都运行 Alpenglow：slot 为 200 ms，一个 epoch 约一天；验证者要登记 BLS 公钥，并在 epoch 边界之前给 vote account 充好准入费，才会被选入验证者集合。</p><p>步骤：调好系统，从发布标签编译 Agave v4.3.x，生成钥匙、创建 vote account、登记 BLS 公钥并充值，写好启动脚本和 systemd unit，让节点追上集群，然后等它进入验证者集合并开始投票。当前 epoch 还剩约 8 小时。等待边界时把右上角的时钟调到 3600×。每一步完成后，都会解释它对应的基础知识。</p><p>工作电脑上的说明在 <code>~/NOTES.md</code>。那里的 CLI 默认连接 mainnet，默认 keypair 里是 mainnet 的 SOL。</p>`,
+      `<p>A new Ubuntu 24.04 host, <b>sol-new</b>, is ready in us-west-2: 32 cores, 384 GiB of memory, and besides the system disk two NVMe drives mounted at <code>/mnt/ledger</code> and <code>/mnt/accounts</code>. Nothing else is installed.</p><p>Build a Solana <b>testnet</b> validator on it. Testnet and mainnet both run Alpenglow: 200 ms slots and epochs of about a day. A validator joins the validator set only once its vote account has a BLS key registered and holds the admission ticket before an epoch boundary.</p><p>The steps: tune the system, build Agave v4.3.x from a release tag, create the keys and the vote account, register the BLS key and fund the vote account, write the startup script and the systemd unit, let the node catch up, then wait for it to join the set and vote. The current epoch has about 8 hours left. While waiting for a boundary, set the clock at the top right to 3600×. After each step the lab explains the concept behind it.</p><p>The workstation notes are in <code>~/NOTES.md</code>. The CLI there defaults to mainnet, and its default keypair holds mainnet SOL.</p>`),
+    startAt: '2026-11-05T09:00:00Z',
+    config: { fresh: true, epoch: 1131, toBoundary: 8 * 3600 },
     // each how is one paragraph: the goals box lays out its direct children as a grid
     steps: [
       {
@@ -505,43 +557,55 @@
       {
         text: LL('调整内核参数，开放验证者端口', 'Tune the kernel and open the validator ports'),
         how: LL(`写入 Agave 需要的 sysctl 设置并加载：${c(SYSCTL)}，然后 ${c('sysctl -p /etc/sysctl.d/21-agave-validator.conf')}。开放端口段：${c('ufw allow 8000:8020/tcp')}、${c('ufw allow 8000:8020/udp')}，再用 ${c('ufw status')} 确认。`, `Write the sysctl settings Agave expects and load them: ${c(SYSCTL)}, then ${c('sysctl -p /etc/sysctl.d/21-agave-validator.conf')}. Open the port range: ${c('ufw allow 8000:8020/tcp')}, ${c('ufw allow 8000:8020/udp')}, and check with ${c('ufw status')}.`),
-        after: LL('Agave 收发大量 UDP 流量，并把 accounts 数据库映射进内存。启动时它会检查 UDP 缓冲区大小，太小就直接退出。gossip、TPU、TVU 和 repair 都从 <code>--dynamic-port-range</code> 中取端口；gossip 还需要 TCP，其他节点靠它确认本节点可达。文件句柄上限稍后在 systemd unit 里设置。', 'Agave moves a lot of UDP traffic and maps the accounts database into memory. At startup it checks the UDP buffer sizes and exits if they are too small. Gossip, TPU, TVU and repair all take ports from <code>--dynamic-port-range</code>; gossip also needs TCP, which peers use to confirm the node is reachable. The file-descriptor limit is set later, in the systemd unit.'),
+        after: LL('Agave 收发大量 UDP 流量，并把 accounts 数据库映射进内存。启动时它会检查 UDP 缓冲区大小，太小就直接退出。gossip、TPU、TVU、repair 和投票消息都从 <code>--dynamic-port-range</code> 中取端口；gossip 还需要 TCP，其他节点靠它确认本节点可达。文件句柄上限稍后在 systemd unit 里设置。', 'Agave moves a lot of UDP traffic and maps the accounts database into memory. At startup it checks the UDP buffer sizes and exits if they are too small. Gossip, TPU, TVU, repair and vote messages all take ports from <code>--dynamic-port-range</code>; gossip also needs TCP, which peers use to confirm the node is reachable. The file-descriptor limit is set later, in the systemd unit.'),
         check: w => { const n = node(w); return H().netOk(n) && n.sysctl['vm.max_map_count'] >= 1000000 && H().portsOpen(n, 8000, 8020); },
       },
       {
-        text: LL('从发布标签编译 Agave', 'Build Agave from a release tag'),
-        how: LL(`Anza 以源码形式发布版本，验证者程序由运维自己编译。克隆发布标签，把程序装到 /usr/local/bin：${c('git clone --branch v4.3.0 --depth 1 https://github.com/anza-xyz/agave.git /opt/agave')}、${c('/opt/agave/scripts/cargo-install-all.sh /usr/local')}，然后 ${c('agave-validator --version')}。编译要几分钟模拟时间，可以先把时钟调快。`, `Anza releases source code, and operators build the validator themselves. Clone the release tag and install the binaries into /usr/local/bin: ${c('git clone --branch v4.3.0 --depth 1 https://github.com/anza-xyz/agave.git /opt/agave')}, ${c('/opt/agave/scripts/cargo-install-all.sh /usr/local')}, then ${c('agave-validator --version')}. The build takes several simulated minutes; speed up the clock meanwhile.`),
-        after: LL('只从发布标签编译，不要用 master。版本号是集群认识你的一部分：<code>solana gossip</code> 会显示它，功能激活依赖它，升级也就是换一个标签重新编译。同一次编译还装好了 <code>solana</code> 和 <code>solana-keygen</code>。', 'Build from a release tag, never from master. The version is part of how the cluster sees you: <code>solana gossip</code> shows it, feature activations depend on it, and an upgrade is another tagged build. The same build installs <code>solana</code> and <code>solana-keygen</code>.'),
-        check: w => H().binAt(w, node(w), '/usr/local/bin/agave-validator') === '4.3.0' && w.flags.agave_version !== undefined,
+        text: LL('从发布标签编译 Agave v4.3.x', 'Build Agave v4.3.x from a release tag'),
+        how: LL(`Anza 以源码形式发布版本，验证者程序由运维自己编译。v4.3.x 是 Alpenglow 的发布线。克隆发布标签，把程序装到 /usr/local/bin：${c('git clone --branch v4.3.2 --depth 1 https://github.com/anza-xyz/agave.git /opt/agave')}、${c('/opt/agave/scripts/cargo-install-all.sh /usr/local')}，然后 ${c('agave-validator --version')}。编译要几分钟模拟时间，可以先把时钟调快。`, `Anza releases source code, and operators build the validator themselves. v4.3.x is the Alpenglow release line. Clone the release tag and install the binaries into /usr/local/bin: ${c('git clone --branch v4.3.2 --depth 1 https://github.com/anza-xyz/agave.git /opt/agave')}, ${c('/opt/agave/scripts/cargo-install-all.sh /usr/local')}, then ${c('agave-validator --version')}. The build takes several simulated minutes; speed up the clock meanwhile.`),
+        after: LL('只从发布标签编译，不要用 master。版本号是集群认识你的一部分：<code>solana gossip</code> 会显示它，功能激活依赖它。早于 4.3 的版本不能参与 Alpenglow 的共识；激活之前，testnet 上运行 Frankendancer 的节点也必须换成 Agave 4.3。同一次编译还装好了 <code>solana</code> 和 <code>solana-keygen</code>，登记 BLS 公钥需要 CLI 4.1.0 或更高版本。', 'Build from a release tag, never from master. The version is part of how the cluster sees you: <code>solana gossip</code> shows it, and feature activations depend on it. Versions before 4.3 cannot take part in Alpenglow consensus; before activation, testnet nodes on Frankendancer had to switch to Agave 4.3 as well. The same build installs <code>solana</code> and <code>solana-keygen</code>; registering the BLS key needs CLI 4.1.0 or later.'),
+        check: w => /^4\.3\./.test(H().binAt(w, node(w), '/usr/local/bin/agave-validator') || '') && w.flags.agave_version !== undefined,
       },
       {
         text: LL('在服务器上生成 identity 和 vote account keypair', 'Generate the identity and vote account keypairs on the server'),
         how: LL(`${c('solana-keygen new --no-bip39-passphrase -o /home/sol/validator-keypair.json')}、${c('solana-keygen new --no-bip39-passphrase -o /home/sol/vote-account-keypair.json')}。服务将以 <code>sol</code> 用户运行，把两个文件交给它：${c('chown sol:sol /home/sol/validator-keypair.json /home/sol/vote-account-keypair.json')}。`, `${c('solana-keygen new --no-bip39-passphrase -o /home/sol/validator-keypair.json')}, ${c('solana-keygen new --no-bip39-passphrase -o /home/sol/vote-account-keypair.json')}. The service will run as <code>sol</code>, so hand both files to it: ${c('chown sol:sol /home/sol/validator-keypair.json /home/sol/vote-account-keypair.json')}.`),
-        after: LL('identity 签每一票、付每一笔手续费，所以必须在服务器上。vote account keypair 只在创建 vote account 时签一次名，之后没有任何权限（基础课第 2 章）。withdrawer 不在这里生成。', 'The identity signs every vote and pays every fee, so it has to live on the server. The vote account keypair signs only the creation of the vote account and has no authority afterwards (Fundamentals, chapter 2). The withdrawer is not generated here.'),
-        check: w => { const n = node(w); return ['/home/sol/validator-keypair.json', '/home/sol/vote-account-keypair.json'].every(p => { const f = S.fsGet(n, p); return f && f.owner === 'sol' && kpOn(w, n, p); }); },
+        after: LL('identity 签每一票和每个块，也是默认的 authorized voter，BLS 公钥由它派生，所以必须在服务器上。vote account keypair 只在创建 vote account 时签一次名，之后没有任何权限（基础课第 2 章）。withdrawer 不在这里生成。', 'The identity signs every vote and every block. It is also the default authorized voter, and the BLS key is derived from it, so it has to live on the server. The vote account keypair signs only the creation of the vote account and has no authority afterwards (Fundamentals, chapter 2). The withdrawer is not generated here.'),
+        check: w => { const n = node(w); return [KP, '/home/sol/vote-account-keypair.json'].every(p => { const f = S.fsGet(n, p); return f && f.owner === 'sol' && kpOn(w, n, p); }); },
       },
       {
         text: LL('在工作电脑上生成 authorized withdrawer', 'Generate the authorized withdrawer on the workstation'),
         how: LL(`回到工作电脑：${c('exit')}（退出 root），再 ${c('exit')}。在那里生成：${c('solana-keygen new -o ~/authorized-withdrawer-keypair.json')}。输出里有它的公钥，也可以用 ${c('solana-keygen pubkey ~/authorized-withdrawer-keypair.json')} 再看一次。`, `Return to the workstation: ${c('exit')} (leaves root), then ${c('exit')} again. Generate the key there: ${c('solana-keygen new -o ~/authorized-withdrawer-keypair.json')}. The output shows its pubkey; ${c('solana-keygen pubkey ~/authorized-withdrawer-keypair.json')} shows it again.`),
-        after: LL('withdrawer 能取走 vote account 的钱、修改佣金、更换 identity。如果它放在服务器上，任何拿到 root 的人都能夺走这台验证者的收入。生产环境里它放在硬件钱包或离线机器上，助记词另外保存。', 'The withdrawer can empty the vote account, change the commission and reassign the identity. On the server, anyone who gained root would own the validator\'s income. In production it lives on a hardware wallet or an offline machine, with the seed phrase stored apart from it.'),
+        after: LL('withdrawer 能取走 vote account 的钱、修改佣金、更换 identity。vote account 现在还存着准入费，取款的权限因此更要紧。如果它放在服务器上，任何拿到 root 的人都能夺走这台验证者的收入。生产环境里它放在硬件钱包或离线机器上，助记词另外保存。', 'The withdrawer can empty the vote account, change the commission and reassign the identity. The vote account now also holds the admission ticket money, which makes that power matter more. On the server, anyone who gained root would own the validator\'s income. In production it lives on a hardware wallet or an offline machine, with the seed phrase stored apart from it.'),
         check: w => laptopKeys(w).length > 0,
       },
       {
         text: LL('在 testnet 上给 identity 充值', 'Fund the identity on testnet'),
         how: LL(`新账户在收到 SOL 之前并不存在，所以 CLI 要求确认：${c(`solana transfer ${ID} 20 --from ~/funding-testnet.json --allow-unfunded-recipient -ut`)}。查看余额：${c(`solana balance ${ID} -ut`)}。`, `A new account does not exist until it holds SOL, so the CLI asks for confirmation: ${c(`solana transfer ${ID} 20 --from ~/funding-testnet.json --allow-unfunded-recipient -ut`)}. Check it: ${c(`solana balance ${ID} -ut`)}.`),
-        after: LL('identity 先要付 vote account 的免租金额，之后每票约 5,000 lamports，400 ms slot 下每天约 1.1 SOL（基础课第 3 章）。每条命令都用 <code>-ut</code> 写明集群，用 <code>--from</code> 写明付款方。在这台电脑上漏掉其中任何一个，转出去的都是默认 keypair 里的 mainnet SOL。', 'The identity first pays the vote account\'s rent, then about 5,000 lamports per vote, roughly 1.1 SOL a day at 400 ms slots (Fundamentals, chapter 3). Every command named the cluster with <code>-ut</code> and the payer with <code>--from</code>. Leave either out on this workstation and the transfer spends mainnet SOL from the default keypair.'),
+        after: LL('identity 付 vote account 的免租金额和登记 BLS 公钥的交易费，之后支付普通交易费、收出块收入。它不再为投票付费，但告警仍在低于 9 SOL 时响。每条命令都用 <code>-ut</code> 写明集群，用 <code>--from</code> 写明付款方。在这台电脑上漏掉其中任何一个，转出去的都是默认 keypair 里的 mainnet SOL。', 'The identity pays the vote account\'s rent and the fee for registering the BLS key; after that it pays ordinary transaction fees and receives block revenue. It no longer pays for votes, but its alert still fires below 9 SOL. Every command named the cluster with <code>-ut</code> and the payer with <code>--from</code>. Leave either out on this workstation and the transfer spends mainnet SOL from the default keypair.'),
         check: w => !!serverId(w) && H().testnetBal(w, serverId(w)) >= 10,
       },
       {
         text: LL('创建 vote account', 'Create the vote account'),
-        how: LL(`回到服务器：${c('ssm sol-new')}、${c('sudo -i')}。在 testnet 上创建，由 identity 付费，withdrawer 只给公钥：${c(`solana create-vote-account -ut --fee-payer /home/sol/validator-keypair.json --commission 10 /home/sol/vote-account-keypair.json /home/sol/validator-keypair.json ${WD}`)}。查看结果：${c(`solana vote-account ${VOTE} -ut`)}。`, `Back on the server: ${c('ssm sol-new')}, ${c('sudo -i')}. Create it on testnet, with the identity paying and the withdrawer given only by its pubkey: ${c(`solana create-vote-account -ut --fee-payer /home/sol/validator-keypair.json --commission 10 /home/sol/vote-account-keypair.json /home/sol/validator-keypair.json ${WD}`)}. Inspect it: ${c(`solana vote-account ${VOTE} -ut`)}.`),
-        after: LL('vote account 把 identity 和它的投票、credits 绑在一起。withdrawer 只以公钥出现，私钥从没碰过服务器。佣金要明确指定：CLI 的默认值是 100%，会拿走委托人的全部通胀奖励。', 'The vote account ties the identity to its votes and credits. The withdrawer appears only as a pubkey; its private key never touched the server. Set the commission explicitly: the CLI default is 100%, which keeps all of the delegators\' inflation rewards.'),
+        how: LL(`回到服务器：${c('ssm sol-new')}、${c('sudo -i')}。在 testnet 上创建，由 identity 付费，withdrawer 只给公钥：${c(`solana create-vote-account -ut --fee-payer ${KP} --commission 10 /home/sol/vote-account-keypair.json ${KP} ${WD}`)}。查看结果：${c(`solana vote-account ${VOTE} -ut`)}。`, `Back on the server: ${c('ssm sol-new')}, ${c('sudo -i')}. Create it on testnet, with the identity paying and the withdrawer given only by its pubkey: ${c(`solana create-vote-account -ut --fee-payer ${KP} --commission 10 /home/sol/vote-account-keypair.json ${KP} ${WD}`)}. Inspect it: ${c(`solana vote-account ${VOTE} -ut`)}.`),
+        after: LL('vote account 把 identity 和它的投票、credits 绑在一起。withdrawer 只以公钥出现，私钥从没碰过服务器。佣金要明确指定：CLI 的默认值是 100%，会拿走委托人的全部通胀奖励。新账户里只有免租金额，还付不起准入费；输出里的 <code>BLS Public Key</code> 一行也还是空的。', 'The vote account ties the identity to its votes and credits. The withdrawer appears only as a pubkey; its private key never touched the server. Set the commission explicitly: the CLI default is 100%, which keeps all of the delegators\' inflation rewards. The new account holds only its rent-exempt minimum, not the ticket, and the <code>BLS Public Key</code> line in the output is still empty.'),
         check: w => { const ch = w.chain; return !!ch.vote && ch.identity === serverId(w) && laptopKeys(w).includes(ch.withdrawer); },
       },
       {
+        text: LL('登记 BLS 公钥并核对', 'Register the BLS key and verify it'),
+        how: LL(`先看由 identity（authorized voter）派生的 BLS 公钥：${c(`solana-keygen bls_pubkey ${KP}`)}。把它写进 vote account，voter 保持不变：${c(`solana vote-authorize-voter-checked -ut --fee-payer ${KP} ${VOTE} ${KP} ${KP}`)}。核对：${c(`solana vote-account ${VOTE} -ut | grep "BLS Public Key"`)}。`, `First look at the BLS key derived from the identity, the authorized voter: ${c(`solana-keygen bls_pubkey ${KP}`)}. Write it into the vote account, keeping the voter unchanged: ${c(`solana vote-authorize-voter-checked -ut --fee-payer ${KP} ${VOTE} ${KP} ${KP}`)}. Verify: ${c(`solana vote-account ${VOTE} -ut | grep "BLS Public Key"`)}.`),
+        after: LL('Votor 用 BLS 签名把许多验证者的票聚合成一张证书。没有登记 BLS 公钥的 vote account 在边界时准入失败，原因是 "no BLS pubkey"，验证者被排除在共识之外。不管 vote account 是用什么工具创建的，都要登记并用 grep 核对这一行（基础课第 2 章）。', 'Votor aggregates the votes of many validators into one certificate with BLS signatures. A vote account without a BLS key fails admission at the boundary with "no BLS pubkey", and the validator is excluded from consensus. Whatever tool created the vote account, register the key and check that line with grep (Fundamentals, chapter 2).'),
+        check: w => !!w.chain.bls && w.flags.bls_seen !== undefined,
+      },
+      {
+        text: LL('在边界之前给 vote account 充值', 'Fund the vote account before the boundary'),
+        how: LL(`回到工作电脑（${c('exit')}、${c('exit')}），看还剩多少时间：${c('solana epoch-info -ut')}。转入准入费、免租金额和余量，余额要在 5 SOL 的告警线之上：${c(`solana transfer ${VOTE} 8 --from ~/funding-testnet.json -ut`)}。可选：让出块收入进入 vote account，withdrawer 在这台电脑上签名：${c(`solana vote-update-commission-collector ${VOTE} block-revenue ${VOTE} ~/authorized-withdrawer-keypair.json -ut`)}。`, `Back on the workstation (${c('exit')}, ${c('exit')}), check how much time is left: ${c('solana epoch-info -ut')}. Send the ticket, the rent and a margin, enough to stay above the 5 SOL alert floor: ${c(`solana transfer ${VOTE} 8 --from ~/funding-testnet.json -ut`)}. Optional: send block revenue to the vote account, signed by the withdrawer on this workstation: ${c(`solana vote-update-commission-collector ${VOTE} block-revenue ${VOTE} ~/authorized-withdrawer-keypair.json -ut`)}.`),
+        after: LL('bank 进入下一个 epoch 的那一刻，会选出再下一个 epoch 的验证者集合，并从 vote account 扣 0.8 SOL。此刻余额不足准入费加免租金额，或者没有 BLS 公钥，就要再等一整个 epoch（基础课第 4 章）。8 SOL 够付好几个边界。出块收入的收款账户变更在两个 epoch 之后生效；这台验证者还没有质押，也就没有出块收入，这个设置是为以后准备的。', 'The moment the bank enters the next epoch, it picks the set for the epoch after and debits 0.8 SOL from the vote account. If the balance is short of the ticket plus rent then, or the BLS key is missing, the validator waits a whole extra epoch (Fundamentals, chapter 4). 8 SOL covers several boundaries. A block revenue collector change takes effect two epochs later; this validator has no stake and so no block revenue yet, so the setting is for later.'),
+        check: w => H().voteBal(w) >= H().VOTE_FLOOR,
+      },
+      {
         text: LL('写启动脚本', 'Write the startup script'),
-        how: LL(`${c('mkdir -p /home/sol/bin')}，然后写入脚本：${c(SCRIPT)}。加上执行权限并检查内容：${c('chmod 755 /home/sol/bin/validator.sh')}、${c('cat /home/sol/bin/validator.sh')}。`, `${c('mkdir -p /home/sol/bin')}, then write the script: ${c(SCRIPT)}. Make it executable and read it back: ${c('chmod 755 /home/sol/bin/validator.sh')}, ${c('cat /home/sol/bin/validator.sh')}.`),
-        after: LL('每个参数都有用处。<code>--entrypoint</code> 和 <code>--expected-genesis-hash</code> 把节点固定在 testnet，genesis hash 不对时节点直接停下，不会加入别的集群。<code>--known-validator</code> 和 <code>--only-known-rpc</code> 只从可信节点下载快照（基础课第 7 章）。<code>--ledger</code> 和 <code>--accounts</code> 让两个数据库各用一块盘。<code>--limit-ledger-size</code> 防止 ledger 写满磁盘。<code>--private-rpc</code> 不对外公布 RPC 端口。', 'Each flag has a job. <code>--entrypoint</code> and <code>--expected-genesis-hash</code> pin the node to testnet; with a wrong genesis hash it stops instead of joining another cluster. <code>--known-validator</code> with <code>--only-known-rpc</code> takes snapshots only from trusted nodes (Fundamentals, chapter 7). <code>--ledger</code> and <code>--accounts</code> give each database its own drive. <code>--limit-ledger-size</code> keeps the ledger from filling the disk. <code>--private-rpc</code> does not advertise the RPC port.'),
+        how: LL(`回到服务器（${c('ssm sol-new')}、${c('sudo -i')}），${c('mkdir -p /home/sol/bin')}，然后写入脚本：${c(SCRIPT)}。加上执行权限并检查内容：${c('chmod 755 /home/sol/bin/validator.sh')}、${c('cat /home/sol/bin/validator.sh')}。`, `Back on the server (${c('ssm sol-new')}, ${c('sudo -i')}), ${c('mkdir -p /home/sol/bin')}, then write the script: ${c(SCRIPT)}. Make it executable and read it back: ${c('chmod 755 /home/sol/bin/validator.sh')}, ${c('cat /home/sol/bin/validator.sh')}.`),
+        after: LL('每个参数都有用处。<code>--entrypoint</code> 和 <code>--expected-genesis-hash</code> 把节点固定在 testnet，genesis hash 不对时节点直接停下，不会加入别的集群。<code>--known-validator</code> 和 <code>--only-known-rpc</code> 只从可信节点下载快照（基础课第 7 章）。<code>--ledger</code> 和 <code>--accounts</code> 让两个数据库各用一块盘；vote history 文件也写在 ledger 目录里。<code>--limit-ledger-size</code> 防止 ledger 写满磁盘。<code>--private-rpc</code> 不对外公布 RPC 端口。', 'Each flag has a job. <code>--entrypoint</code> and <code>--expected-genesis-hash</code> pin the node to testnet; with a wrong genesis hash it stops instead of joining another cluster. <code>--known-validator</code> with <code>--only-known-rpc</code> takes snapshots only from trusted nodes (Fundamentals, chapter 7). <code>--ledger</code> and <code>--accounts</code> give each database its own drive, and the vote history file is written in the ledger directory. <code>--limit-ledger-size</code> keeps the ledger from filling the disk. <code>--private-rpc</code> does not advertise the RPC port.'),
         check: scriptOk,
       },
       {
@@ -553,19 +617,25 @@
       {
         text: LL('等待节点追上集群', 'Wait for the node to catch up'),
         how: LL(`快照加载完、RPC 起来之后，${c('solana catchup --our-localhost')} 才有回应。重复执行，直到它报告 <code>has caught up</code>。`, `${c('solana catchup --our-localhost')} answers once RPC is up, after the snapshot has loaded. Repeat it until it reports <code>has caught up</code>.`),
-        after: LL('节点从 known validator 下载了快照，加载后重放此后产生的 slot，一点点追近集群，直到到达链头（基础课第 7 章）。只有追上之后，它的投票才有意义。', 'The node downloaded a snapshot from a known validator, loaded it, then replayed the slots produced since, gaining on the cluster until it reached the tip (Fundamentals, chapter 7). Only now do its votes count.'),
+        after: LL('节点从 known validator 下载了快照，加载后重放此后产生的 slot，一点点追近集群，直到到达链头（基础课第 7 章）。它现在与集群同步，但还不在验证者集合里，所以还不投票：机制面板显示"已同步，不在验证者集合中"。', 'The node downloaded a snapshot from a known validator, loaded it, then replayed the slots produced since, gaining on the cluster until it reached the tip (Fundamentals, chapter 7). It is now in sync but not yet in the validator set, so it does not vote: the mechanism panel shows "in sync, not in the validator set".'),
         check: w => { const n = node(w); return svcOf(w).state === 'active' && n.sol.phase === 'run' && n.sol.catchup <= 0; },
       },
       {
-        text: LL('在链上确认验证者正在投票', 'Confirm on chain that the validator votes'),
-        how: LL(`回到工作电脑（${c('exit')}、${c('exit')}）：${c('solana validators -ut')}、${c(`solana gossip -ut | grep ${ID}`)}、${c(`solana vote-account ${VOTE} -ut`)}。credits 随每一票增加。`, `From the workstation (${c('exit')}, ${c('exit')}): ${c('solana validators -ut')}, ${c(`solana gossip -ut | grep ${ID}`)}, ${c(`solana vote-account ${VOTE} -ut`)}. Credits grow with every vote.`),
-        after: LL('gossip 说明节点可达，验证者列表说明它的投票正在落地。没有质押的验证者只有在投票时才出现在列表里。它能挣 credits，但在有人委托质押之前拿不到通胀奖励（基础课第 6 章）。', 'Gossip shows the node is reachable; the validator list shows its votes landing. An unstaked validator appears in the list only while it votes. It earns credits, but no inflation rewards until stake is delegated to it (Fundamentals, chapter 6).'),
+        text: LL('越过 epoch 边界，确认入选', 'Cross the epoch boundary and confirm admission'),
+        how: LL(`把右上角的时钟调到 3600×。${c('solana epoch-info -ut')} 显示离边界还有多久。bank 进入下一个 epoch 时，事件日志会显示准入费被扣除、验证者被选入再下一个 epoch。用 ${c(`solana vote-account ${VOTE} -ut`)} 确认余额少了 0.8 SOL。`, `Set the clock at the top right to 3600×. ${c('solana epoch-info -ut')} shows the time left to the boundary. When the bank enters the next epoch, the event log shows the ticket debited and the validator admitted to the epoch after. Confirm with ${c(`solana vote-account ${VOTE} -ut`)} that the balance fell by 0.8 SOL.`),
+        after: LL('边界上，运行时按当时的 vote account 余额和 BLS 公钥决定了再下一个 epoch 的集合，并扣了准入费。新验证者因此要等两个边界：第一个边界决定它入选，第二个边界开始它入选的那个 epoch。在生产环境中，admin RPC 方法 <code>validatorAdmissionTicketStatus</code> 会提前两个 epoch 报告准入资格。', 'At the boundary, the runtime decided the set for the epoch after next from the vote account balance and the BLS key at that moment, and debited the ticket. A new validator therefore waits for two boundaries: the first admits it, and the second begins the epoch it was admitted to. In production, the admin RPC method <code>validatorAdmissionTicketStatus</code> reports eligibility two epochs ahead.'),
+        check: w => w.flags.admitted !== undefined,
+      },
+      {
+        text: LL('入选的 epoch 开始后，在链上确认验证者正在投票', 'Once the admitted epoch begins, confirm on chain that the validator votes'),
+        how: LL(`保持 3600×，等下一个边界。之后回到工作电脑（${c('exit')}、${c('exit')}）：${c('solana validators -ut')}、${c(`solana gossip -ut | grep ${ID}`)}、${c(`solana vote-account ${VOTE} -ut`)}。credits 随投票增加。`, `Keep 3600× and wait for the next boundary. Then, from the workstation (${c('exit')}, ${c('exit')}): ${c('solana validators -ut')}, ${c(`solana gossip -ut | grep ${ID}`)}, ${c(`solana vote-account ${VOTE} -ut`)}. Credits grow as it votes.`),
+        after: LL('gossip 说明节点可达，验证者列表说明它正在投票。投票是直接发给其他验证者的消息，identity 余额不会因此减少；每个边界从 vote account 扣一次准入费。没有质押的验证者只有在投票时才出现在列表里，在有人委托质押之前没有通胀奖励（基础课第 6 章）。', 'Gossip shows the node is reachable; the validator list shows it voting. Votes are messages sent directly to other validators, so the identity balance does not fall; each boundary takes the ticket from the vote account. An unstaked validator appears in the list only while it votes, and earns no inflation rewards until stake is delegated to it (Fundamentals, chapter 6).'),
         check: w => H().isVoting(w, node(w)) && w.chain.credits > 0 && w.flags.fresh_seen !== undefined,
       },
       {
         text: LL('练习安全重启的习惯', 'Practise the safe-restart habit'),
         how: LL(`在服务器上（${c('ssm sol-new')}、${c('sudo -i')}）：${c('agave-validator -l /mnt/ledger wait-for-restart-window --min-idle-time 2')}。`, `On the server (${c('ssm sol-new')}, ${c('sudo -i')}): ${c('agave-validator -l /mnt/ledger wait-for-restart-window --min-idle-time 2')}.`),
-        after: LL('<code>wait-for-restart-window</code> 等到验证者在指定时间内没有 leader slot、集群中 delinquent 的质押也足够少时才返回，这时重启不会丢掉出块机会。这台验证者还没有质押，没有 leader slot，所以立即返回。有了质押之后，每次计划内重启都先运行它，再执行 <code>systemctl restart agave-validator</code>。', '<code>wait-for-restart-window</code> returns once the validator has no leader slots within the idle time given and the cluster\'s delinquent stake is low enough, so a restart costs no blocks. This validator has no stake and no leader slots yet, so it returns at once. Once it is staked, run it before every planned restart, then <code>systemctl restart agave-validator</code>.'),
+        after: LL('<code>wait-for-restart-window</code> 等到验证者在指定时间内没有 leader slot、集群中 delinquent 的质押也足够少时才返回，这时重启不会让自己的 leader 窗口变成 skip 证书。这台验证者还没有质押，没有 leader slot，所以立即返回。有了质押之后，每次计划内重启都先运行它，再执行 <code>systemctl restart agave-validator</code>。200 ms 的 slot 下，停投约 26 秒就会被标记为 delinquent。', '<code>wait-for-restart-window</code> returns once the validator has no leader slots within the idle time given and the cluster\'s delinquent stake is low enough, so a restart does not turn its own leader window into skip certificates. This validator has no stake and no leader slots yet, so it returns at once. Once it is staked, run it before every planned restart, then <code>systemctl restart agave-validator</code>. At 200 ms slots, about 26 seconds without voting marks it delinquent.'),
         check: w => w.flags.restart_window !== undefined,
       },
     ].map(st => Object.assign(st, { how: LL(`<p>${st.how.zh}</p>`, `<p>${st.how.en}</p>`) })),
@@ -573,17 +643,18 @@
       { flag: 'withdrawer_hot', text: LL('把 authorized withdrawer 的 keypair 放到验证者主机上', 'Putting the authorized withdrawer keypair on the validator host') },
       { flag: 'mainnet_spend', text: LL('搭建 testnet 验证者时花掉了 mainnet 的 SOL', 'Spending mainnet SOL while setting up a testnet validator') },
     ],
-    limit: 6 * 3600,
+    limit: 4 * 86400,
     score: w => {
-      const ch = w.chain, t = ch.firstVoteAt;
+      const ch = w.chain, first = ch.startEpoch + 2;
       return [
-        [LL('到第一张选票用时', 'Time to first vote'), t != null ? S.fmtDur(t) : '—', t != null && t < 3600 ? 'good' : 'mid'],
+        [LL('第一个入选的 epoch', 'First epoch in the set'), ch.firstAdmitted != null ? String(ch.firstAdmitted) : '—', ch.firstAdmitted === first ? 'good' : 'mid'],
         [LL('佣金', 'Commission'), ch.commission != null ? `${ch.commission}%` : '—', ch.commission != null && ch.commission <= 10 ? 'good' : 'mid'],
-        [LL('identity 余额（testnet）', 'Identity balance (testnet)'), ch.identity ? `◎ ${(ch.bal[ch.identity] || 0).toFixed(3)}` : '—', ch.identity && ch.bal[ch.identity] >= 8 ? 'good' : 'mid'],
+        [LL('vote account 余额（testnet）', 'Vote account balance (testnet)'), ch.vote ? `◎ ${H().voteBal(w).toFixed(3)}` : '—', ch.vote && H().voteBal(w) >= H().VOTE_FLOOR ? 'good' : 'mid'],
+        [LL('identity 余额（testnet）', 'Identity balance (testnet)'), ch.identity ? `◎ ${(ch.bal[ch.identity] || 0).toFixed(3)}` : '—', ch.identity && ch.bal[ch.identity] >= H().ID_FLOOR ? 'good' : 'mid'],
       ];
     },
     debrief: LL(
-      '本练习按 Agave 搭建 testnet 验证者的通用步骤编写。有三个习惯适用于任何网络。第一，按钥匙的用途决定放在哪里：identity 持续签名，所以在服务器上；withdrawer 控制资金，所以离线。第二，每条命令都写明集群，因为同一个地址在 testnet 和 mainnet 上同时存在。第三，节点自己的启动检查就是它最早的监控：内核参数缺失、端口不通、genesis hash 不对，每一种都会在造成损害之前带着明确的信息停下来。模拟集群按 Tower BFT 和按票收费建模。在运行 Alpenglow 的集群上，按票的手续费换成了每个 epoch 从 vote account 扣的费用，所以除了 identity，vote account 也要留足余额。',
-      'This lab follows the standard Agave setup for a testnet validator. Three habits carry over to any network. First, place each key by what it does: the identity signs continuously and lives on the server; the withdrawer controls the money and stays offline. Second, name the cluster in every command, because the same address exists on testnet and on mainnet. Third, the node\'s own startup checks are its first monitoring: a missing kernel setting, a closed port or a wrong genesis hash each stop it with a clear message before it can do harm. The simulated cluster models Tower BFT with per-vote fees. On a cluster running Alpenglow, the per-vote fee is replaced by a per-epoch fee taken from the vote account, so the vote account needs a balance as well as the identity.'),
+      '本练习按 Agave 在 Alpenglow 集群上搭建 testnet 验证者的通用步骤编写。有四个习惯适用于任何网络。第一，按钥匙的用途决定放在哪里：identity 持续签名，所以在服务器上；withdrawer 控制资金，所以离线。第二，每条命令都写明集群，因为同一个地址在 testnet 和 mainnet 上同时存在。第三，节点自己的启动检查就是它最早的监控：内核参数缺失、端口不通、genesis hash 不对，每一种都会在造成损害之前带着明确的信息停下来。第四，在 Alpenglow 下，加入集合是一件按 epoch 排期的事：BLS 公钥和准入费都要在边界之前就位，新验证者要等两个边界才开始投票。错过一个边界，就要再等一天。',
+      'This lab follows the standard Agave setup for a testnet validator on an Alpenglow cluster. Four habits carry over to any network. First, place each key by what it does: the identity signs continuously and lives on the server; the withdrawer controls the money and stays offline. Second, name the cluster in every command, because the same address exists on testnet and on mainnet. Third, the node\'s own startup checks are its first monitoring: a missing kernel setting, a closed port or a wrong genesis hash each stop it with a clear message before it can do harm. Fourth, under Alpenglow, joining the set is scheduled by epoch: the BLS key and the ticket must be in place before the boundary, and a new validator waits two boundaries before it votes. Miss a boundary and the wait grows by a day.'),
   });
 })(SIM);

@@ -88,7 +88,8 @@
       return open.map(g => `${g.acked ? C.green('acked  ') : C.red('firing ')} ${g.name}`).join('\n') + '\n' + C.gray(S.L('用法：ack <告警名>，和告警卡片上的“确认”按钮作用相同。\n', 'Usage: ack <AlertName>, the same as the Acknowledge button on the alert card.\n'));
     }
     const g = w.groups[ctx.args[0]];
-    if (!g || g.resolved) return { code: 1, out: S.L(`ack: 没有正在告警的 ${ctx.args[0]}\n`, `ack: no firing alert named ${ctx.args[0]}\n`) };
+    // a hint may say to acknowledge an alert that has not fired yet or has already cleared: say so, do not fail
+    if (!g || g.resolved) return S.L(`${ctx.args[0]} 现在没有在告警，不需要确认。\n`, `${ctx.args[0]} is not firing right now; nothing to acknowledge.\n`);
     if (g.acked) return S.L(`${g.name} 已经确认过了。\n`, `${g.name} is already acknowledged.\n`);
     S.ack(w, g.name);
     return S.L(`已确认 ${g.name}。\n`, `Acknowledged ${g.name}.\n`);

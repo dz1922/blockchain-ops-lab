@@ -8,9 +8,16 @@ const SIM = (function () {
   const S = {};
   S.networks = {};
   S.scenarios = [];
+  S.lessons = [];              // step 1 of each module: interactive fundamentals
   S.commands = {};             // generic shell commands, available everywhere
   S.registerNetwork = n => { S.networks[n.id] = n; };
-  S.registerScenario = s => { S.scenarios.push(s); };
+  // track: 'run' (step 2, guided: `steps` instead of `objectives`) or 'ops' (step 3, production problems)
+  S.registerScenario = s => {
+    if (s.steps) s.objectives = s.steps.map(st => ({ text: st.text, check: st.check }));
+    s.track = s.track || (s.steps ? 'run' : 'ops');
+    S.scenarios.push(s);
+  };
+  S.registerLesson = l => { S.lessons.push(l); };
 
   /* ---------- language ----------
      S.L(zh, en)  → string in the current language (terminal output, written once)
@@ -243,9 +250,24 @@ const SIM = (function () {
   };
 
   /* ---------- objectives, scoring ---------- */
+  // guided labs: steps complete in order and stay complete; each may explain what just happened
+  function advanceSteps(w) {
+    const s = w.scn;
+    while (w.stepIdx < s.steps.length) {
+      const st = s.steps[w.stepIdx];
+      let ok = false; try { ok = !!st.check(w); } catch (e) { ok = false; }
+      if (!ok) break;
+      w.stepIdx++;
+      S.event(w, 'ok', { zh: `<b>第 ${w.stepIdx} 步完成</b> · ${st.text.zh}`, en: `<b>Step ${w.stepIdx} done</b> · ${st.text.en}` });
+      if (st.after) S.lesson(w, 'step-' + w.stepIdx, st.text, st.after);
+      S.emit('step', w, w.stepIdx);
+    }
+    w.objState = s.steps.map((_, i) => i < w.stepIdx);
+  }
   function checkObjectives(w, dt) {
     const s = w.scn;
-    w.objState = s.objectives.map(o => { try { return !!o.check(w); } catch (e) { return false; } });
+    if (s.steps) { w.stepIdx = w.stepIdx || 0; advanceSteps(w); }
+    else w.objState = s.objectives.map(o => { try { return !!o.check(w); } catch (e) { return false; } });
     (s.forbidden || []).forEach(f => {
       if (w.flags[f.flag] !== undefined && w.violations[f.flag] === undefined) {
         w.violations[f.flag] = w.t;
@@ -254,7 +276,7 @@ const SIM = (function () {
     });
     if (w.objState.length && w.objState.every(Boolean)) {
       w.okFor += dt;
-      if (w.okFor >= (s.holdFor ?? 60)) S.finish(w, true);
+      if (w.okFor >= (s.holdFor ?? (s.steps ? 0 : 60))) S.finish(w, true);
     } else w.okFor = 0;
     if (s.limit && w.t >= s.limit) S.finish(w, false);
   }

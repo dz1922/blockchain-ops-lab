@@ -45,6 +45,12 @@
   };
   K.hint = ctx => {
     const w = ctx.w, hs = w.scn.hints || [];
+    const plain = h => S.stripAnsi(S.tr(h).replace(/<\/?code>/g, '`').replace(/<[^>]+>/g, '')).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+    if (w.scn.steps) {
+      const st = w.scn.steps[w.stepIdx || 0];
+      if (!st) return C.gray(S.L('所有步骤都已完成。\n', 'All steps are done.\n'));
+      return `${C.yellow(S.L(`第 ${(w.stepIdx || 0) + 1}/${w.scn.steps.length} 步`, `Step ${(w.stepIdx || 0) + 1}/${w.scn.steps.length}`))}  ${C.bold(S.tr(st.text))}\n${plain(st.how || '')}\n`;
+    }
     if (w.hintIdx >= hs.length) return C.gray(S.L('提示已经用完。可以看看 objectives，或者回顾右侧的事件记录。\n', 'No more hints. Check objectives, or read back through the event log on the right.\n'));
     w.stats.hints++;
     const txt = S.stripAnsi(S.tr(hs[w.hintIdx++]).replace(/<\/?code>/g, '`').replace(/<[^>]+>/g, '')).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');

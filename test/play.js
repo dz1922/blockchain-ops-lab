@@ -29,6 +29,28 @@ const nets = fs.readdirSync(dir).filter(f => f.endsWith('.js')).map(f => f.slice
     };`;
   const ids = await page.evaluate('VSIM.S.scenarios.map(s => s.id)');
   const fails = [];
+  // Step 1: open every chapter of every lesson, check the widget mounts, answer each quiz correctly.
+  const lessons = await page.evaluate(`VSIM.S.lessons.filter(l => !${JSON.stringify(process.env.ONLY || '')} || ${JSON.stringify(process.env.ONLY || '')}.split(',').includes(l.network)).map(l => ({ id: l.id, chapters: l.chapters.map(c => ({ widget: !!c.widget, answers: (c.quiz || []).map(q => q.answer) })) }))`);
+  for (const l of lessons) {
+    const bad = [];
+    for (let i = 0; i < l.chapters.length; i++) {
+      const before = errs.length;
+      await page.evaluate(`location.hash='l=${l.id}/${i}'`); await page.waitForTimeout(120);
+      const info = await page.evaluate(`({ h2: (document.querySelector('#l-main h2') || {}).textContent || '', wg: document.getElementById('l-wg') ? document.getElementById('l-wg').children.length : -1, body: (document.querySelector('#l-main .lv-body') || {}).textContent || '' })`);
+      if (!info.h2.trim() || info.body.trim().length < 80) bad.push(`chapter ${i + 1}: empty title or body`);
+      if (l.chapters[i].widget && info.wg < 1) bad.push(`chapter ${i + 1}: widget did not render`);
+      await page.waitForTimeout(400); // let widget animations run
+      for (let q = 0; q < l.chapters[i].answers.length; q++) {
+        await page.click(`#l-main .q[data-q="${q}"] [data-o="${l.chapters[i].answers[q]}"]`);
+      }
+      if (errs.length > before) bad.push(`chapter ${i + 1}: page error`);
+    }
+    const n = await page.evaluate(`Object.keys(((JSON.parse(localStorage.getItem('vsim.v1') || '{}').learn || {})['${l.id}'] || {}).c || {}).length`);
+    if (n !== l.chapters.length) bad.push(`only ${n}/${l.chapters.length} chapters marked done`);
+    console.log(`\n========== lesson ${l.id}: ${l.chapters.length} chapters, ${l.chapters.reduce((a, c) => a + c.answers.length, 0)} questions ${bad.length ? 'FAIL' : 'ok'} ==========`);
+    bad.forEach(x => fails.push(`lesson ${l.id}: ${x}`));
+  }
+  await page.evaluate(`location.hash=''`);
   const covered = new Set();
   for (const net of nets) {
     for (const c of require(path.join(dir, net + '.js'))) {

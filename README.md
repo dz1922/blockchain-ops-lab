@@ -83,9 +83,40 @@ node test/shots.js         # desktop + mobile screenshots to /tmp/vsim-*.png
 | `laptopCommands`, `extraRules` | Optional. |
 | `tick(w, dt)` | Optional. Runs after the network's own tick; use it for lab-specific checks, such as raising a trap flag when a threshold is crossed. |
 
+## Three steps per network
+
+Each network module on the landing page has three steps:
+
+1. **Fundamentals** (`S.registerLesson`): interactive explanations with small widgets and quizzes. No terminal.
+2. **Run a validator** (a scenario with `steps`): a guided lab that builds a validator from scratch in the simulator.
+3. **Production challenges** (a scenario with `objectives`): labs that start with an alert firing.
+
+### Lesson contract
+
+`S.registerLesson({...})`, in `src/NN-learn-<chain>.js`:
+
+| Field | Purpose |
+|---|---|
+| `id`, `network`, `title`, `tagline`, `minutes` | The step-1 card. `title` and `tagline` are `S.LL`. |
+| `chapters` | `[{ title, body, widget?, after?, quiz? }]` |
+| `chapter.body`, `chapter.after` | `S.LL` HTML, rendered before and after the widget. Use `<p>`, `<h3>`, `<ul>`, `<table>`, `<div class="note">` (or `note warn`), `<pre class="term-snip">`. |
+| `chapter.widget(el)` | Builds an interactive widget inside `el`. Read text with `S.L(zh, en)`; the chapter re-mounts on a language change. Helpers in `S.wg`: `el`, `slider`, `buttons`, `stats`, `meter`, `loop` (requestAnimationFrame), `every`. Anything started with `loop`/`every` stops when the chapter closes. Start with `S.wg.el('div', 'wg-title', S.L('动手试试', 'Try it'))`. Inline SVG is fine; its `text` uses the mono font. |
+| `chapter.quiz` | `[{ q, options: [S.LL…], answer, why }]`. A chapter with a quiz counts as done when every question is answered correctly; a chapter without one counts when opened. |
+
+### Guided lab (step 2)
+
+A scenario with `steps: [{ text, how, after?, check(w) }]` instead of `objectives`. It gets `track: 'run'` automatically.
+
+- Steps complete in order, and a completed step stays completed.
+- `how` is HTML shown under the current step in the goals box. Clicking a `<code>` there puts it into the terminal, so each `<code>` should be one complete command.
+- `after` appears in the event log when the step completes and in the review, to explain what just happened.
+- `hint` prints the current step's `how`.
+- The lab finishes when the last step completes.
+- `forbidden` traps still apply.
+
 ## Adding a network
 
-Write `src/NN-net-<chain>.js`, its labs in `src/NN-scenarios-<chain>.js`, and its test cases in `test/labs/<chain>.js`; nothing else needs to change. Every lab must be played by at least one test case. Source material:
+Write `src/NN-net-<chain>.js`, its labs in `src/NN-scenarios-<chain>.js`, its fundamentals and guided lab in `src/NN-learn-<chain>.js`, and its test cases in `test/labs/<chain>.js`; nothing else needs to change. Every lab must be played by at least one test case. `test/play.js` opens every lesson chapter, checks that the widget renders, and answers every quiz. Source material:
 
 - The client's own documentation gives paths, systemd units, users and identity files.
 - Production alert rules give the alert names and thresholds.

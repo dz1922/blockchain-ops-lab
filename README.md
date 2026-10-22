@@ -142,4 +142,6 @@ One-time setup:
 
 The first run creates the Vercel project `blockchain-ops-lab` if it does not exist. Turn off Vercel's own Deployment Protection for production; access is controlled by the password gate instead.
 
+The root `vercel.json` turns off Vercel's own Git deployments. Only the workflow deploys, from the tested and gated `dist/`. If the project is connected to the repository in the Vercel dashboard, those builds would skip the tests and the gate.
+
 `site/middleware.js` is the password gate. It is Vercel Routing Middleware, which runs on every plan. Visitors without a valid cookie get a password page. A correct password sets an HttpOnly cookie for 30 days. `node test/gate.mjs` tests it.

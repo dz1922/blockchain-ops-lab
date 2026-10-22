@@ -44,7 +44,7 @@
     // performance.now() at setup, so dt is clamped at 0.
     loop(fn) {
       let on = true, last = performance.now(), t0 = last;
-      const f = now => { if (!on) return; const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); last = now; fn(dt, (now - t0) / 1000); requestAnimationFrame(f); };
+      const f = now => { if (!on) return; const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); last = now; fn(dt, Math.max(0, (now - t0) / 1000)); requestAnimationFrame(f); };
       requestAnimationFrame(f);
       const stop = () => { on = false; };
       stops.push(stop);

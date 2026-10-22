@@ -227,6 +227,7 @@
       + (run ? `<button class="next" data-run="${run.id}">${t('toRun')}</button>` : '');
     $('l-nav').querySelectorAll('[data-i]').forEach(b => b.addEventListener('click', () => { location.hash = `l=${l.id}/${b.dataset.i}`; }));
     $('l-nav').querySelectorAll('[data-run]').forEach(b => b.addEventListener('click', () => { location.hash = 's=' + b.dataset.run; }));
+    const on = $('l-nav').querySelector('.on'); if (on && $('l-nav').scrollWidth > $('l-nav').clientWidth) $('l-nav').scrollLeft = on.offsetLeft - 16;
   }
   function renderChapter() {
     S.wg.cleanup();

@@ -1,7 +1,7 @@
 {
   "name": "blockchain-ops-lab",
   "private": true,
-  "description": "Validator Operations Lab: browser-based hands-on labs for running blockchain validators",
+  "description": "Blockchain Operations Lab: browser-based hands-on labs for running blockchain validators",
   "scripts": {
     "build": "./build.sh",
     "check": "for f in src/*.js; do node --check \"$f\" || exit 1; done",

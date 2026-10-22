@@ -1,4 +1,4 @@
-# Validator Operations Lab
+# Blockchain Operations Lab
 
 Hands-on labs for running blockchain validators, in the browser. Each lab provides a simulated shell, simulated hosts and a simulated chain, with production-style alert rules. Everything ships as one static file, `dist/index.html`, with no backend.
 

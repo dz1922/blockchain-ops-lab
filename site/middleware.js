@@ -25,7 +25,7 @@ function gate(next, failed) {
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">
-<title>Validator Operations Lab</title>
+<title>Blockchain Operations Lab</title>
 <style>
 *{box-sizing:border-box;margin:0}
 body{min-height:100vh;display:grid;place-items:center;background:#0b0f0d;color:#e8f0e4;font:16px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif;padding:1.5rem}
@@ -39,7 +39,7 @@ button{padding:.75rem;border:0;border-radius:10px;background:#b6f23a;color:#0b0f
 .err{color:#ff6b57;font-size:.88rem}
 </style></head><body>
 <form method="post" action="/__auth">
-<span class="k">Validator Operations Lab</span>
+<span class="k" data-zh="区块链运维实验室 · Blockchain Operations Lab">Blockchain Operations Lab</span>
 <h1 data-zh="请输入访问密码">Enter the access password</h1>
 <p data-zh="这门课程仅限受邀访问。">This course is shared by invitation.</p>
 ${failed ? '<p class="err" data-zh="密码错误。">Incorrect password.</p>' : ''}

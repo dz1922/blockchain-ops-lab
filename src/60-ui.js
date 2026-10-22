@@ -10,8 +10,8 @@
   const tr = S.tr;
 
   const T = {
-    brand: { zh: '<b>验证者运维实验室</b> · Validator Operations Lab', en: '<b>Validator Operations Lab</b>' },
-    heroTitle: { zh: '验证者运维实验室', en: 'Validator Operations Lab' },
+    brand: { zh: '<b>区块链运维实验室</b> · Blockchain Operations Lab', en: '<b>Blockchain Operations Lab</b>' },
+    heroTitle: { zh: '区块链运维实验室', en: 'Blockchain Operations Lab' },
     heroLead: {
       zh: '在浏览器里练习运行区块链验证者。每个练习给你一组节点、一条持续运行的链，以及和生产环境一样会触发的告警。你在终端里排查和修复，右侧面板显示每一步操作在协议层面的效果。',
       en: 'Practise running blockchain validators in your browser. Each lab gives you a set of nodes, a running chain, and alerts that fire the way they do in production. You investigate and fix things from a terminal while the panel on the right shows what each step does at the protocol level.',
@@ -164,7 +164,7 @@
     $('back').textContent = t('back'); $('btn-hint').textContent = t('hint'); $('btn-brief').textContent = t('briefing');
     $('h-mech').textContent = t('hMech'); $('h-alerts').textContent = t('hAlerts'); $('h-goals').textContent = t('hGoals');
     $('h-feed').textContent = t('hFeed'); $('h-feed2').textContent = t('newest'); $('term-busy').textContent = t('busy');
-    document.title = w ? `${tr(w.scn.title)} · Validator Operations Lab` : lv ? `${tr(lv.l.title)} · Validator Operations Lab` : (S.lang === 'zh' ? '验证者运维实验室 · Validator Operations Lab' : 'Validator Operations Lab');
+    document.title = w ? `${tr(w.scn.title)} · Blockchain Operations Lab` : lv ? `${tr(lv.l.title)} · Blockchain Operations Lab` : (S.lang === 'zh' ? '区块链运维实验室 · Blockchain Operations Lab' : 'Blockchain Operations Lab');
   }
 
   /* ---------- landing ---------- */

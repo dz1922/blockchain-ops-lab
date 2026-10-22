@@ -71,7 +71,7 @@
   const vhPath = pk => `${LEDGER}/vote_history-${pk}.bin`;
   const vhBody = (pk, s) => `(binary vote history) node_pubkey=${pk} last_vote_slot=${s}\n`;
   const unitIdentity = (w, n) => { const m = /--identity\s+(\S+)/.exec(S.fsRead(w, n, UNIT) || ''); return m ? pubkeyOf(w, S.fsRead(w, n, m[1])) : null; };
-  const SNAP_RE = /^(?:incremental-)?snapshot-(?:\d+-)?(\d+)-[A-Za-z]\w*\.tar\.zst$/;
+  const SNAP_RE = /^(?:incremental-)?snapshot-(?:\d+-)?(\d+)-[1-9A-HJ-NP-Za-km-z]+\.tar\.zst$/; // the hash is base58
   const SNAP_BYTES = 22977616281;
   const MAX_SNAP_AGE = 2500; // --maximum-local-snapshot-age, in slots: about 8 minutes at 200 ms
   const GAIN = 25, LOSS = -1.8; // net slots per second while replaying, and while depending on repair

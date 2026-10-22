@@ -36,10 +36,44 @@
       wipe,
     ],
     hints: [
-      LL('<code>ssm canton-01</code>、<code>sudo -i</code>，然后看验证者应用的日志：<code>docker logs --tail 30 splice-validator-validator-1</code>。', '<code>ssm canton-01</code>, <code>sudo -i</code>, then read the validator app log: <code>docker logs --tail 30 splice-validator-validator-1</code>.'),
-      LL('日志说自动充值是关着的。配置在 <code>/opt/splice-node/docker-compose/validator/.env</code>：<code>grep TRAFFIC .env</code>。改成 2000：<code>sed -i \'s/TARGET_TRAFFIC_THROUGHPUT=0/TARGET_TRAFFIC_THROUGHPUT=2000/\' .env</code>。', 'The log says automated top-ups are off. The setting is in <code>/opt/splice-node/docker-compose/validator/.env</code>: <code>grep TRAFFIC .env</code>. Set it to 2000: <code>sed -i \'s/TARGET_TRAFFIC_THROUGHPUT=0/TARGET_TRAFFIC_THROUGHPUT=2000/\' .env</code>.'),
-      LL('在 compose 目录执行 <code>docker compose up -d</code>，compose 会按新的 .env 重建验证者容器。<code>docker compose restart</code> 不会重新读取 .env。用 <code>docker inspect splice-validator-validator-1 | grep TARGET</code> 确认。', 'In the compose directory run <code>docker compose up -d</code>; compose recreates the validator container with the new .env. <code>docker compose restart</code> does not read .env again. Confirm with <code>docker inspect splice-validator-validator-1 | grep TARGET</code>.'),
-      LL('也可以先手动买一批：<code>TOKEN=$(cat /root/operator.jwt)</code>，用 <code>curl -s -H "Authorization: Bearer $TOKEN" http://wallet.localhost/api/validator/v0/validator-user</code> 查到本验证者的 party，再向 <code>/v0/wallet/buy-traffic-requests</code> POST receiving_validator_party_id、domain_id、traffic_amount（至少 200000）和 tracking_id。domain_id 在 <code>~/NOTES.md</code> 里（工作电脑上）。', 'You can also buy a batch by hand first: <code>TOKEN=$(cat /root/operator.jwt)</code>, look up this validator\'s party with <code>curl -s -H "Authorization: Bearer $TOKEN" http://wallet.localhost/api/validator/v0/validator-user</code>, then POST receiving_validator_party_id, domain_id, traffic_amount (at least 200000) and tracking_id to <code>/v0/wallet/buy-traffic-requests</code>. The domain_id is in <code>~/NOTES.md</code> on the workstation.'),
+      {
+        text: LL('登录节点，看验证者应用自己怎么说。它每次检查 traffic 都会记一行日志，说明为什么买或者不买。', 'Log in to the node and read what the validator app says. Each time it checks traffic it logs a line saying why it did or did not buy.'),
+        cmds: ['ssm canton-01', 'sudo -i', 'docker ps', 'docker logs --tail 30 splice-validator-validator-1'],
+      },
+      {
+        text: LL('日志说自动充值是关着的。对照 compose 目录里的 <code>.env</code> 和运行中容器实际拿到的环境变量。', 'The log says automated top-ups are off. Compare <code>.env</code> in the compose directory with the environment the running container actually has.'),
+        cmds: ['cd /opt/splice-node/docker-compose/validator', 'grep TRAFFIC .env', 'docker inspect splice-validator-validator-1 | grep TARGET'],
+      },
+      {
+        text: LL('先手动买一批 traffic 止住下降。token 在 <code>/root/operator.jwt</code>；收款 party 要用 wallet API 查本验证者自己的，不要从笔记里抄；synchronizer ID 从 scan 查。traffic_amount 至少 200000。', 'Buy a batch of traffic by hand first to stop the fall. The token is in <code>/root/operator.jwt</code>. Look up this validator\'s own party from the wallet API rather than copying one from notes, and the synchronizer ID from a scan. traffic_amount must be at least 200000.'),
+        cmds: [
+          'TOKEN=$(cat /root/operator.jwt)',
+          'PARTY=$(curl -s -H "Authorization: Bearer $TOKEN" http://wallet.localhost/api/validator/v0/validator-user | jq -r .party_id)',
+          "DOMAIN=$(curl -s https://scan.sv-1.example/api/scan/v0/dso-sequencers | jq -r '.domainSequencers[0].domainId')",
+          'echo $PARTY $DOMAIN',
+          String.raw`curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"receiving_validator_party_id\":\"$PARTY\",\"domain_id\":\"$DOMAIN\",\"traffic_amount\":400000,\"tracking_id\":\"manual-topup-1\"}" http://wallet.localhost/api/validator/v0/wallet/buy-traffic-requests`,
+        ],
+        wait: 90,
+      },
+      {
+        text: LL('确认这笔购买已经完成，traffic 记到了本验证者名下。', 'Confirm the purchase has completed and the traffic was credited to this validator.'),
+        cmds: ['curl -s -X POST -H "Authorization: Bearer $(cat /root/operator.jwt)" http://wallet.localhost/api/validator/v0/wallet/buy-traffic-requests/manual-topup-1/status', 'docker logs --tail 5 splice-validator-validator-1'],
+      },
+      {
+        text: LL('把自动充值打开：.env 里的目标吞吐量改回注释里记下的 2000。<code>docker compose restart</code> 不会重新读取 .env；<code>docker compose up -d</code> 才会按新的 .env 重建容器。', 'Turn automated top-ups back on: set the target throughput in .env back to 2000, the value the comment records. <code>docker compose restart</code> does not read .env again; <code>docker compose up -d</code> recreates the container from the new .env.'),
+        cmds: [
+          'cd /opt/splice-node/docker-compose/validator',
+          "sed -i 's/TARGET_TRAFFIC_THROUGHPUT=0/TARGET_TRAFFIC_THROUGHPUT=2000/' .env",
+          'grep TRAFFIC .env',
+          'docker compose up -d',
+        ],
+        wait: 120,
+      },
+      {
+        text: LL('确认运行中的容器用的是新设置，六个容器都恢复 healthy，验证者应用重新开始检查 traffic。', 'Confirm the running container has the new setting, all six containers are healthy again, and the validator app is checking traffic again.'),
+        cmds: ['docker inspect splice-validator-validator-1 | grep TARGET', 'docker compose ps', 'docker logs --tail 10 splice-validator-validator-1'],
+        wait: 600,
+      },
     ],
     limit: 4 * 3600, holdFor: 60,
     score: w => [
@@ -73,11 +107,38 @@
     ],
     forbidden: [wipe],
     hints: [
-      LL('<code>ssm canton-01</code>、<code>sudo -i</code>、<code>docker ps</code>，然后 <code>curl -s 127.0.0.1:8100/api/sync | jq</code> 和 <code>curl -s 127.0.0.1:8090/status | jq</code>。', '<code>ssm canton-01</code>, <code>sudo -i</code>, <code>docker ps</code>, then <code>curl -s 127.0.0.1:8100/api/sync | jq</code> and <code>curl -s 127.0.0.1:8090/status | jq</code>.'),
-      LL('看 participant 自己怎么说：<code>docker logs --tail 20 splice-validator-participant-1</code>，再看 <code>df -h</code>。', 'See what the participant says: <code>docker logs --tail 20 splice-validator-participant-1</code>, then <code>df -h</code>.'),
-      LL('找出占用空间的地方：<code>du -sh /var/lib/docker/*</code>，再 <code>du -sh /var/lib/docker/containers/*</code>。<code>docker system df</code> 不统计容器日志。', 'Find what uses the space: <code>du -sh /var/lib/docker/*</code>, then <code>du -sh /var/lib/docker/containers/*</code>. <code>docker system df</code> does not count container logs.'),
-      LL('清空正在写入的日志：<code>truncate -s 0 $(docker inspect --format \'{{.LogPath}}\' splice-validator-participant-1)</code>。不要 rm 这个文件，也不要动 postgres 卷。', 'Empty the log that is being written: <code>truncate -s 0 $(docker inspect --format \'{{.LogPath}}\' splice-validator-participant-1)</code>. Do not rm the file, and leave the postgres volume alone.'),
-      LL('防止复发：<code>echo \'{"log-driver":"json-file","log-opts":{"max-size":"100m","max-file":"3"}}\' &gt; /etc/docker/daemon.json</code>，<code>systemctl restart docker</code>，再到 compose 目录执行 <code>docker compose up -d --force-recreate</code>。已有的容器要重建才会用上新设置。', 'Prevent a repeat: <code>echo \'{"log-driver":"json-file","log-opts":{"max-size":"100m","max-file":"3"}}\' &gt; /etc/docker/daemon.json</code>, <code>systemctl restart docker</code>, then <code>docker compose up -d --force-recreate</code> in the compose directory. Existing containers only pick up the new setting when recreated.'),
+      {
+        text: LL('容器健康检查只说明进程活着。登录节点，再问两个同步接口：scan-proxy 的 <code>/api/sync</code> 给出落后多少轮，ledger-indexer 的 <code>/status</code> 给出落后多少秒。', 'A container health check only says the process is alive. Log in and ask the two sync endpoints: <code>/api/sync</code> on the scan-proxy gives the rounds behind, and <code>/status</code> on the ledger-indexer gives the seconds behind.'),
+        cmds: ['ssm canton-01', 'sudo -i', 'docker ps', 'curl -s 127.0.0.1:8100/api/sync | jq', 'curl -s 127.0.0.1:8090/status | jq'],
+      },
+      {
+        text: LL('看 participant 自己的日志，再看磁盘。', 'Read the participant\'s own log, then check the disk.'),
+        cmds: ['docker logs --tail 20 splice-validator-participant-1', 'df -h'],
+      },
+      {
+        text: LL('找出占用空间的地方。<code>docker system df</code> 不统计容器日志，要直接看 <code>/var/lib/docker</code> 下的目录。', 'Find what uses the space. <code>docker system df</code> does not count container logs, so look at the directories under <code>/var/lib/docker</code> directly.'),
+        cmds: ['docker system df', 'du -sh /var/lib/docker/*', 'du -sh /var/lib/docker/containers/*', 'docker inspect --format \'{{.LogPath}}\' splice-validator-participant-1'],
+      },
+      {
+        text: LL('清空 participant 正在写入的日志文件。用 truncate，不要 rm：docker 还开着这个文件，删掉它空间也不会释放。postgres 卷不要动。', 'Empty the log file the participant is writing. Use truncate, not rm: docker still holds the file open, so deleting it frees nothing. Leave the postgres volume alone.'),
+        cmds: ['truncate -s 0 $(docker inspect --format \'{{.LogPath}}\' splice-validator-participant-1)', 'df -h'],
+      },
+      {
+        text: LL('防止复发：在 <code>/etc/docker/daemon.json</code> 里给 json-file 日志加大小上限，重启 docker，再到 compose 目录重建容器。已有的容器要重建才会用上新设置。', 'Prevent a repeat: give the json-file log driver a size limit in <code>/etc/docker/daemon.json</code>, restart docker, then recreate the containers from the compose directory. Existing containers only pick up the new setting when recreated.'),
+        cmds: [
+          'cat /etc/docker/daemon.json',
+          'echo \'{"log-driver":"json-file","log-opts":{"max-size":"100m","max-file":"3"}}\' > /etc/docker/daemon.json',
+          'systemctl restart docker',
+          'cd /opt/splice-node/docker-compose/validator',
+          'docker compose up -d --force-recreate',
+          'docker inspect --format \'{{json .HostConfig.LogConfig}}\' splice-validator-participant-1',
+        ],
+        wait: 1500,
+      },
+      {
+        text: LL('确认节点追上了网络：<code>/api/sync</code> 报告 synced，<code>/status</code> 的落后秒数接近 0，磁盘留有余量。', 'Confirm the node has caught up: <code>/api/sync</code> reports synced, the lag in <code>/status</code> is close to 0, and the disk has room.'),
+        cmds: ['docker compose ps', 'curl -s 127.0.0.1:8100/api/sync | jq', 'curl -s 127.0.0.1:8090/status | jq', 'df -h'],
+      },
     ],
     limit: 6 * 3600, holdFor: 60,
     score: w => [
@@ -118,10 +179,31 @@
       { flag: 'ahead_of_quorum', text: LL('运行 SV 法定多数尚未采纳的 Splice 版本', 'Running a Splice release the SV quorum has not adopted') },
     ],
     hints: [
-      LL('<code>ssm canton-01</code>、<code>sudo -i</code>，看版本监视的结果：<code>tail -3 /var/log/splice-version-watcher.log</code>。单个 SV 也可以查：<code>curl -s https://scan.sv-1.example/api/scan/version</code>。', '<code>ssm canton-01</code>, <code>sudo -i</code>, and read the watcher\'s result: <code>tail -3 /var/log/splice-version-watcher.log</code>. Single SVs answer too: <code>curl -s https://scan.sv-1.example/api/scan/version</code>.'),
-      LL('GitHub 上最新的是 0.8.4，但只有 2 个 SV 在运行它。目标是 0.8.3。', 'The latest release on GitHub is 0.8.4, but only 2 SVs run it. The target is 0.8.3.'),
-      LL('<code>cd /opt/splice-node/docker-compose/validator</code>，<code>sed -i \'s/IMAGE_TAG=0.8.2/IMAGE_TAG=0.8.3/\' .env</code>，<code>docker compose pull</code>，<code>docker compose up -d</code>。', '<code>cd /opt/splice-node/docker-compose/validator</code>, <code>sed -i \'s/IMAGE_TAG=0.8.2/IMAGE_TAG=0.8.3/\' .env</code>, <code>docker compose pull</code>, <code>docker compose up -d</code>.'),
-      LL('不要用 <code>docker compose down -v</code> 或 <code>./stop.sh -D</code>：它们会删除 postgres 卷，节点身份随之丢失。升级后 participant 要先迁移数据库，等它变成 healthy；<code>systemctl start splice-version-watcher</code> 可以立即重跑一次版本检查。', 'Do not use <code>docker compose down -v</code> or <code>./stop.sh -D</code>: they delete the postgres volume, and the node identity with it. After the upgrade the participant migrates its database first; wait for healthy. <code>systemctl start splice-version-watcher</code> reruns the version check at once.'),
+      {
+        text: LL('登录节点，看版本监视脚本的结论，再直接问几个 SV 的 scan。脚本必须在这台主机上跑，因为 SV 的 scan 只回应验证者的 IP。', 'Log in and read the version watcher\'s result, then ask a few SV scans directly. The watcher has to run on this host, because SV scans answer only validator IPs.'),
+        cmds: ['ssm canton-01', 'sudo -i', 'tail -3 /var/log/splice-version-watcher.log', 'curl -s https://scan.sv-1.example/api/scan/version', 'curl -s https://scan.sv-4.example/api/scan/version'],
+      },
+      {
+        text: LL('GitHub 上最新的是 0.8.4，但只有 2 个 SV 在运行它。法定多数是 13 个中的至少 9 个，它们达到的最高版本是 0.8.3，这就是目标版本。先确认本机正在运行的版本。', 'The newest release on GitHub is 0.8.4, but only 2 SVs run it. The quorum is at least 9 of 13, and the highest version they have reached is 0.8.3: that is the target. First confirm what this host runs now.'),
+        cmds: ['curl -s https://api.github.com/repos/canton-network/splice/releases/latest | jq -r .tag_name', 'cat /var/lib/node_exporter/textfile_collector/splice_version.prom', 'docker ps'],
+      },
+      {
+        text: LL('在 compose 目录把 <code>IMAGE_TAG</code> 改成 0.8.3，拉取镜像，再用 <code>docker compose up -d</code> 重建容器，数据库卷原样保留。不要用 <code>docker compose down -v</code> 或 <code>./stop.sh -D</code>：它们会删除 postgres 卷，节点身份随之丢失。', 'In the compose directory set <code>IMAGE_TAG</code> to 0.8.3, pull the images, and recreate the containers with <code>docker compose up -d</code>, keeping the database volume as it is. Do not use <code>docker compose down -v</code> or <code>./stop.sh -D</code>: they delete the postgres volume, and the node identity with it.'),
+        cmds: [
+          'cd /opt/splice-node/docker-compose/validator',
+          'grep IMAGE_TAG .env',
+          "sed -i 's/IMAGE_TAG=0.8.2/IMAGE_TAG=0.8.3/' .env",
+          'grep IMAGE_TAG .env',
+          'docker compose pull',
+          'docker compose up -d',
+        ],
+        wait: 600,
+      },
+      {
+        text: LL('升级后 participant 要先迁移数据库，然后才变成 healthy。确认六个容器都 healthy、验证者应用在记录活动，再立即重跑一次版本检查，让告警恢复。', 'After the upgrade the participant migrates its database before it turns healthy. Confirm all six containers are healthy and the validator app is recording activity, then rerun the version check at once so the alert resolves.'),
+        cmds: ['docker compose ps', 'docker logs --tail 5 splice-validator-validator-1', 'systemctl start splice-version-watcher', 'tail -1 /var/log/splice-version-watcher.log'],
+        wait: 600,
+      },
     ],
     limit: 6 * 3600, holdFor: 60,
     score: w => [

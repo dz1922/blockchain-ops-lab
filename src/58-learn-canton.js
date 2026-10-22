@@ -529,8 +529,16 @@
       {
         text: LL('检查新主机：docker、磁盘，以及到 SV 的出站访问', 'Check the new host: docker, disk, and outbound access to the SVs'),
         how: LL(
-          '用 <code>ssm canton-new</code> 登录，<code>sudo -i</code> 切换到 root。检查工具：<code>docker --version</code>、<code>docker compose version</code>；检查磁盘：<code>df -h</code>。再从这台主机向一个 SV 的 scan 查询版本：<code>curl -s https://scan.sv-3.example/api/scan/version</code>。SV 的 scan 只回应白名单里的验证者 IP。',
-          'Log in with <code>ssm canton-new</code> and become root with <code>sudo -i</code>. Check the tools with <code>docker --version</code> and <code>docker compose version</code>, and the disk with <code>df -h</code>. Then ask an SV scan for its version from this host: <code>curl -s https://scan.sv-3.example/api/scan/version</code>. SV scans answer only allowlisted validator IPs.'),
+          '登录新主机并切换到 root，确认 docker、compose 插件和磁盘空间都没问题。然后从这台主机向一个 SV 的 scan 查询版本：SV 的 scan 只回应白名单里的验证者 IP。',
+          'Log in to the new host as root and check docker, the compose plugin and the free disk. Then ask an SV scan for its version from this host: SV scans answer only allowlisted validator IPs.'),
+        cmds: [
+          'ssm canton-new',
+          'sudo -i',
+          'docker --version',
+          'docker compose version',
+          'df -h',
+          'curl -s https://scan.sv-3.example/api/scan/version',
+        ],
         after: LL(
           '主机能连到 SV。scan 和上线接口只接受 SV 白名单里的出口 IP，这里如果返回 403，说明担保 SV 还没有把这台主机加进去。参见基础课第 2 章：验证者要先有担保 SV 才能加入网络。',
           'The host can reach the SVs. Scans and onboarding endpoints accept only egress IPs the SVs have allowlisted, so a 403 here means the sponsor has not added this host yet. See fundamentals chapter 2: a validator needs a sponsor before it can join.'),
@@ -539,8 +547,16 @@
       {
         text: LL('下载 SV 法定多数所运行版本的发布包', 'Download the release bundle for the version the SV quorum runs'),
         how: LL(
-          '每个 SV 的 scan 都报告自己运行的 Splice 版本。多问几个：<code>curl -s https://scan.sv-1.example/api/scan/version</code>、<code>curl -s https://scan.sv-2.example/api/scan/version</code>、<code>curl -s https://scan.sv-4.example/api/scan/version</code>。全部 scan 的列表：<code>curl -s https://scan.sv-3.example/api/scan/v0/scans | jq -r \'.scans[0].scans[].publicUrl\'</code>。再看 GitHub 上最新的发布：<code>curl -s https://api.github.com/repos/canton-network/splice/releases/latest | jq -r .tag_name</code>。应该运行的版本，是 13 个 SV 中至少 9 个达到的最高版本，即 0.8.3。下载它的发布包：<code>curl -sSL -o 0.8.3_splice-node.tar.gz https://github.com/canton-network/splice/releases/download/0.8.3/0.8.3_splice-node.tar.gz</code>。',
-          'Each SV scan reports the Splice version it runs. Ask several: <code>curl -s https://scan.sv-1.example/api/scan/version</code>, <code>curl -s https://scan.sv-2.example/api/scan/version</code>, <code>curl -s https://scan.sv-4.example/api/scan/version</code>. The list of all scans: <code>curl -s https://scan.sv-3.example/api/scan/v0/scans | jq -r \'.scans[0].scans[].publicUrl\'</code>. Then check the newest release on GitHub: <code>curl -s https://api.github.com/repos/canton-network/splice/releases/latest | jq -r .tag_name</code>. The version to run is the highest one that at least 9 of the 13 SVs have reached: 0.8.3. Download its bundle: <code>curl -sSL -o 0.8.3_splice-node.tar.gz https://github.com/canton-network/splice/releases/download/0.8.3/0.8.3_splice-node.tar.gz</code>.'),
+          '每个 SV 的 scan 都报告自己运行的 Splice 版本。多问几个，列出全部 scan，再对照 GitHub 上最新的发布。应该运行的，是 13 个 SV 中至少 9 个达到的最高版本，即 0.8.3。下载它的发布包。',
+          'Each SV scan reports the Splice version it runs. Ask several, list all the scans, and compare with the newest release on GitHub. The version to run is the highest one that at least 9 of the 13 SVs have reached: 0.8.3. Download its bundle.'),
+        cmds: [
+          'curl -s https://scan.sv-1.example/api/scan/version',
+          'curl -s https://scan.sv-2.example/api/scan/version',
+          'curl -s https://scan.sv-4.example/api/scan/version',
+          'curl -s https://scan.sv-3.example/api/scan/v0/scans | jq -r \'.scans[0].scans[].publicUrl\'',
+          'curl -s https://api.github.com/repos/canton-network/splice/releases/latest | jq -r .tag_name',
+          'curl -sSL -o 0.8.3_splice-node.tar.gz https://github.com/canton-network/splice/releases/download/0.8.3/0.8.3_splice-node.tar.gz',
+        ],
         after: LL(
           '13 个 SV 里已有 3 个运行 GitHub 上最新的 0.8.4，但至少 2/3 的 SV 运行的是 0.8.3，所以验证者应该跑 0.8.3。只问一个 scan，或者只看 GitHub 的 latest，都不足以做这个判断。参见基础课第 6 章。',
           'Three of the 13 SVs already run 0.8.4, the newest release on GitHub, but at least two thirds of them run 0.8.3, so 0.8.3 is what a validator should run. One scan, or the "latest" tag on GitHub, is not enough to decide. See fundamentals chapter 6.'),
@@ -549,8 +565,15 @@
       {
         text: LL('校验发布包，解压到 /opt', 'Verify the bundle and unpack it to /opt'),
         how: LL(
-          'GitHub 为每个发布附件公布 SHA-256 摘要：<code>curl -s https://api.github.com/repos/canton-network/splice/releases/tags/0.8.3 | jq -r \'.assets[0].digest\'</code>。计算下载文件的摘要并比对：<code>sha256sum 0.8.3_splice-node.tar.gz</code>。两者一致再解压：<code>tar xzf 0.8.3_splice-node.tar.gz -C /opt</code>，然后 <code>cd /opt/splice-node/docker-compose/validator</code>，<code>ls -a</code>。',
-          'GitHub publishes a SHA-256 digest for each release asset: <code>curl -s https://api.github.com/repos/canton-network/splice/releases/tags/0.8.3 | jq -r \'.assets[0].digest\'</code>. Compute the digest of the downloaded file and compare: <code>sha256sum 0.8.3_splice-node.tar.gz</code>. If they match, unpack it: <code>tar xzf 0.8.3_splice-node.tar.gz -C /opt</code>, then <code>cd /opt/splice-node/docker-compose/validator</code> and <code>ls -a</code>.'),
+          'GitHub 为每个发布附件公布 SHA-256 摘要。计算下载文件的摘要并比对，一致再解压到 <code>/opt</code>，然后进入 compose 目录看看里面有什么。',
+          'GitHub publishes a SHA-256 digest for each release asset. Compute the digest of the downloaded file and compare. If they match, unpack it to <code>/opt</code>, then look around the compose directory.'),
+        cmds: [
+          'curl -s https://api.github.com/repos/canton-network/splice/releases/tags/0.8.3 | jq -r \'.assets[0].digest\'',
+          'sha256sum 0.8.3_splice-node.tar.gz',
+          'tar xzf 0.8.3_splice-node.tar.gz -C /opt',
+          'cd /opt/splice-node/docker-compose/validator',
+          'ls -a',
+        ],
         after: LL(
           '发布包里有 compose 文件、.env 模板、nginx.conf 和启停脚本。.env 里的 IMAGE_TAG 已经是发布包自己的版本，镜像和 compose 文件因此是配套的。比对摘要可以发现下载不完整或被篡改的文件。',
           'The bundle holds the compose file, a .env template, nginx.conf and the start and stop scripts. IMAGE_TAG in .env already names the bundle\'s own version, so the images match the compose file. Comparing the digest catches a truncated or tampered download.'),
@@ -559,8 +582,12 @@
       {
         text: LL('向担保 SV 申请上线密钥', 'Request an onboarding secret from the sponsoring SV'),
         how: LL(
-          '担保 SV 为每台新验证者签发一个一次性的上线密钥。DevNet 上有 SV 提供自助接口；MainNet 上由担保 SV 按自己的流程发放。本练习用 sv-3 上一个虚构的接口代替这一流程，从白名单内的主机调用：<code>SECRET=$(curl -s -X POST https://sv.sv-3.example/api/sv/v0/onboard/validator/prepare)</code>，然后 <code>echo $SECRET</code>。不要复用发给其他节点的密钥。',
-          'The sponsoring SV issues a one-time onboarding secret for each new validator. On DevNet some SVs offer a self-service endpoint for this; on MainNet the sponsor issues the secret through its own process. This lab stands in for that process with a fictional endpoint on sv-3, called from the allowlisted host: <code>SECRET=$(curl -s -X POST https://sv.sv-3.example/api/sv/v0/onboard/validator/prepare)</code>, then <code>echo $SECRET</code>. Do not reuse a secret issued for another node.'),
+          '担保 SV 为每台新验证者签发一个一次性的上线密钥。DevNet 上有 SV 提供自助接口；MainNet 上由担保 SV 按自己的流程发放。本练习用 sv-3 上一个虚构的接口代替这一流程，从白名单内的主机调用，把密钥存进 <code>$SECRET</code>。不要复用发给其他节点的密钥。',
+          'The sponsoring SV issues a one-time onboarding secret for each new validator. On DevNet some SVs offer a self-service endpoint for this; on MainNet the sponsor issues the secret through its own process. This lab stands in for that process with a fictional endpoint on sv-3, called from the allowlisted host, and keeps the secret in <code>$SECRET</code>. Do not reuse a secret issued for another node.'),
+        cmds: [
+          'SECRET=$(curl -s -X POST https://sv.sv-3.example/api/sv/v0/onboard/validator/prepare)',
+          'echo $SECRET',
+        ],
         after: LL(
           '上线密钥只能用一次，并且会过期。它不是需要长期保管的凭据：节点上线之后，密钥就用掉了，并和这个 participant 绑定。参见基础课第 2 章。',
           'The secret works once, and it expires. It is not a credential to keep: once the node has onboarded, the secret is spent and bound to this participant. See fundamentals chapter 2.'),
@@ -569,8 +596,16 @@
       {
         text: LL('在 .env 里填写网络设置：担保 SV、scan、迁移 ID 和密钥', 'Point .env at the network: sponsor, scan, migration ID and secret'),
         how: LL(
-          '从 scan 的 sequencer 列表查当前的迁移 ID：<code>curl -s https://scan.sv-3.example/api/scan/v0/dso-sequencers | jq \'.domainSequencers[0].sequencers[0].migrationId\'</code>。然后填写 .env：<code>sed -i \'s/MIGRATION_ID=.*/MIGRATION_ID=4/\' .env</code>、<code>sed -i \'s|SPONSOR_SV_ADDRESS=.*|SPONSOR_SV_ADDRESS=https://sv.sv-3.example|\' .env</code>、<code>sed -i \'s|SCAN_ADDRESS=.*|SCAN_ADDRESS=https://scan.sv-3.example|\' .env</code>、<code>sed -i "s/ONBOARDING_SECRET=.*/ONBOARDING_SECRET=$SECRET/" .env</code>。检查结果：<code>grep -v \'^#\' .env</code>。',
-          'Look up the current migration ID in the scan\'s sequencer list: <code>curl -s https://scan.sv-3.example/api/scan/v0/dso-sequencers | jq \'.domainSequencers[0].sequencers[0].migrationId\'</code>. Then fill in .env: <code>sed -i \'s/MIGRATION_ID=.*/MIGRATION_ID=4/\' .env</code>, <code>sed -i \'s|SPONSOR_SV_ADDRESS=.*|SPONSOR_SV_ADDRESS=https://sv.sv-3.example|\' .env</code>, <code>sed -i \'s|SCAN_ADDRESS=.*|SCAN_ADDRESS=https://scan.sv-3.example|\' .env</code>, <code>sed -i "s/ONBOARDING_SECRET=.*/ONBOARDING_SECRET=$SECRET/" .env</code>. Check the result: <code>grep -v \'^#\' .env</code>.'),
+          '从 scan 的 sequencer 列表查当前的迁移 ID（这里是 4），然后在 .env 里填上迁移 ID、担保 SV、scan 地址和上一步拿到的密钥，最后检查结果。',
+          'Look up the current migration ID in the scan\'s sequencer list (4 here). Then fill in the migration ID, the sponsor, the scan address and the secret from the previous step in .env, and check the result.'),
+        cmds: [
+          'curl -s https://scan.sv-3.example/api/scan/v0/dso-sequencers | jq \'.domainSequencers[0].sequencers[0].migrationId\'',
+          'sed -i \'s/MIGRATION_ID=.*/MIGRATION_ID=4/\' .env',
+          'sed -i \'s|SPONSOR_SV_ADDRESS=.*|SPONSOR_SV_ADDRESS=https://sv.sv-3.example|\' .env',
+          'sed -i \'s|SCAN_ADDRESS=.*|SCAN_ADDRESS=https://scan.sv-3.example|\' .env',
+          'sed -i "s/ONBOARDING_SECRET=.*/ONBOARDING_SECRET=$SECRET/" .env',
+          'grep -v \'^#\' .env',
+        ],
         after: LL(
           '迁移 ID 标识 Global Synchronizer 当前的这一代实例，只在大版本升级时改变。participant 的数据库名带着它（participant-4）。填错了，节点就找不到 sequencer。参见基础课第 6 章。',
           'The migration ID names the current incarnation of the Global Synchronizer and changes only with a major upgrade. The participant\'s database name carries it (participant-4). With a wrong value the node cannot find the sequencers. See fundamentals chapter 6.'),
@@ -582,8 +617,13 @@
       {
         text: LL('选定 party hint，打开自动充值', 'Set the party hint and turn on automated traffic top-ups'),
         how: LL(
-          'party hint 会成为验证者 party ID 中可读的那一半，上线之后不能再改。使用约定好的 hint：<code>sed -i \'s/PARTY_HINT=.*/PARTY_HINT=acme-validator-1/\' .env</code>。把自动充值的目标吞吐量设为每秒 2000 字节：<code>sed -i \'s/TARGET_TRAFFIC_THROUGHPUT=.*/TARGET_TRAFFIC_THROUGHPUT=2000/\' .env</code>。检查：<code>grep -E \'PARTY_HINT|TRAFFIC|TOPUP\' .env</code>。',
-          'The party hint becomes the readable half of the validator party ID, and it cannot be changed after onboarding. Use the agreed hint: <code>sed -i \'s/PARTY_HINT=.*/PARTY_HINT=acme-validator-1/\' .env</code>. Set the top-up target throughput to 2000 bytes per second: <code>sed -i \'s/TARGET_TRAFFIC_THROUGHPUT=.*/TARGET_TRAFFIC_THROUGHPUT=2000/\' .env</code>. Check: <code>grep -E \'PARTY_HINT|TRAFFIC|TOPUP\' .env</code>.'),
+          'party hint 会成为验证者 party ID 中可读的那一半，上线之后不能再改。使用约定好的 <code>acme-validator-1</code>，并把自动充值的目标吞吐量设为每秒 2000 字节。',
+          'The party hint becomes the readable half of the validator party ID, and it cannot be changed after onboarding. Use the agreed hint, <code>acme-validator-1</code>, and set the top-up target throughput to 2000 bytes per second.'),
+        cmds: [
+          'sed -i \'s/PARTY_HINT=.*/PARTY_HINT=acme-validator-1/\' .env',
+          'sed -i \'s/TARGET_TRAFFIC_THROUGHPUT=.*/TARGET_TRAFFIC_THROUGHPUT=2000/\' .env',
+          'grep -E \'PARTY_HINT|TRAFFIC|TOPUP\' .env',
+        ],
         after: LL(
           'party hint 的惯例格式是 &lt;组织&gt;-&lt;用途&gt;-&lt;序号&gt;。TARGET_TRAFFIC_THROUGHPUT 大于 0 时，验证者应用会自己购买 extra traffic，用钱包里的 CC 支付；设为 0 就没有任何东西替它补充。参见基础课第 3 章和第 5 章。',
           'The usual party hint format is &lt;organization&gt;-&lt;function&gt;-&lt;enumerator&gt;. With TARGET_TRAFFIC_THROUGHPUT above 0 the validator app buys extra traffic on its own and pays in CC from its wallet; at 0 nothing tops it up. See fundamentals chapters 3 and 5.'),
@@ -592,8 +632,12 @@
       {
         text: LL('用 docker compose 启动节点，看着容器起来', 'Start the node with docker compose and watch the containers come up'),
         how: LL(
-          '<code>docker compose up -d</code> 拉取镜像，按顺序启动六个容器：先是 postgres；postgres 健康之后启动 participant；participant 健康之后启动验证者应用。用 <code>docker compose ps</code> 查看进度。',
-          '<code>docker compose up -d</code> pulls the images and starts the six containers in order: postgres first, the participant once postgres is healthy, and the validator app once the participant is healthy. Follow the progress with <code>docker compose ps</code>.'),
+          'compose 会拉取镜像，按顺序启动六个容器：先是 postgres；postgres 健康之后启动 participant；participant 健康之后启动验证者应用。启动后查看进度。',
+          'Compose pulls the images and starts the six containers in order: postgres first, the participant once postgres is healthy, and the validator app once the participant is healthy. Check the progress after starting.'),
+        cmds: [
+          'docker compose up -d',
+          'docker compose ps',
+        ],
         after: LL(
           'compose 创建了命名卷 splice-validator_postgres-splice。participant 第一次启动时发现数据库是空的，就在里面生成了自己的命名空间密钥。从这一刻起，这个卷保存着节点的身份。参见基础课第 3 章和第 7 章。',
           'Compose created the named volume splice-validator_postgres-splice. On its first start the participant found an empty database and generated its namespace key in it. From this moment the volume holds the node identity. See fundamentals chapters 3 and 7.'),
@@ -602,8 +646,14 @@
       {
         text: LL('看验证者应用完成上线', 'Watch the validator app onboard the participant'),
         how: LL(
-          '读验证者应用的日志：<code>docker logs --tail 20 splice-validator-validator-1</code>。它带着密钥联系担保 SV，SV 在 synchronizer 上授权这个 participant，应用随后分配验证者 party。participant 的日志里能看到连接建立：<code>docker logs --tail 5 splice-validator-participant-1</code>。等 <code>docker compose ps</code> 显示六个容器全部 healthy。上线失败时日志会写明原因：改好 .env 再执行 <code>docker compose up -d</code>，不要删除卷。',
-          'Read the validator app log: <code>docker logs --tail 20 splice-validator-validator-1</code>. The app contacts the sponsor with the secret, the SV authorizes the participant on the synchronizer, and the app allocates the validator party. The participant log shows the connection: <code>docker logs --tail 5 splice-validator-participant-1</code>. Wait until <code>docker compose ps</code> shows all six containers healthy. If onboarding fails, the log says why: fix .env and run <code>docker compose up -d</code> again. Do not delete the volume.'),
+          '验证者应用带着密钥联系担保 SV，SV 在 synchronizer 上授权这个 participant，应用随后分配验证者 party。读两个容器的日志，等六个容器全部 healthy。上线失败时日志会写明原因：改好 .env 再执行 <code>docker compose up -d</code>，不要删除卷。',
+          'The validator app contacts the sponsor with the secret, the SV authorizes the participant on the synchronizer, and the app allocates the validator party. Read both logs and wait until all six containers are healthy. If onboarding fails, the log says why: fix .env and run <code>docker compose up -d</code> again. Do not delete the volume.'),
+        cmds: [
+          'docker logs --tail 20 splice-validator-validator-1',
+          'docker logs --tail 5 splice-validator-participant-1',
+          'docker compose ps',
+        ],
+        wait: 180,
         after: LL(
           '每个身份只上线一次。担保 SV 已经在 Global Synchronizer 上授权了这个 participant，密钥随之用掉。验证者应用要等上线完成才报告 healthy。',
           'Onboarding happens once per identity. The sponsor has authorized this participant on the Global Synchronizer, and the secret is now spent. The validator app reports healthy only after onboarding has completed.'),
@@ -612,8 +662,12 @@
       {
         text: LL('读出验证者的 party ID', 'Read the validator party ID'),
         how: LL(
-          '<code>PARTY=$(docker logs splice-validator-validator-1 | grep "Allocated validator" | sed \'s/.*party //\')</code>，然后 <code>echo $PARTY</code>。<code>::</code> 前面是 .env 里的 hint，后面是 participant 命名空间密钥的指纹。',
-          '<code>PARTY=$(docker logs splice-validator-validator-1 | grep "Allocated validator" | sed \'s/.*party //\')</code>, then <code>echo $PARTY</code>. The part before <code>::</code> is the hint from .env; the part after it is the fingerprint of the participant\'s namespace key.'),
+          '从验证者应用的日志里取出分配的 party ID，存进 <code>$PARTY</code>。<code>::</code> 前面是 .env 里的 hint，后面是 participant 命名空间密钥的指纹。',
+          'Take the allocated party ID from the validator app log and keep it in <code>$PARTY</code>. The part before <code>::</code> is the hint from .env; the part after it is the fingerprint of the participant\'s namespace key.'),
+        cmds: [
+          'PARTY=$(docker logs splice-validator-validator-1 | grep "Allocated validator" | sed \'s/.*party //\')',
+          'echo $PARTY',
+        ],
         after: LL(
           '两台节点即使用同一个 hint，party ID 也不同，因为它们的命名空间密钥不同。这把密钥存放在 postgres 数据库里，所以数据库就是节点的身份。参见基础课第 3 章。',
           'Two nodes with the same hint still get different party IDs, because their namespace keys differ. That key is stored in the postgres database, which is why the database is the node\'s identity. See fundamentals chapter 3.'),
@@ -622,8 +676,13 @@
       {
         text: LL('确认验证者在当前轮次记录了活动', 'Confirm that the validator records activity in the current round'),
         how: LL(
-          '判断验证者是否跟上，要看两个数：网络当前的轮次，和本验证者最后记录活动的轮次。网络轮次从 scan 查：<code>curl -s https://scan.sv-3.example/api/scan/v0/round-of-latest-data</code>。网络看到的本验证者记录：<code>curl -s "https://scan.sv-3.example/api/scan/v0/validators/validator-faucets?validator_ids=$PARTY" | jq</code>。列表为空说明还没有记录过任何一轮；新的一轮大约每 10 分钟开始一次。lastCollectedInRound 应该等于当前轮次。',
-          'Whether a validator keeps up comes down to two numbers: the round the network is in, and the last round this validator recorded activity for. The network round, from a scan: <code>curl -s https://scan.sv-3.example/api/scan/v0/round-of-latest-data</code>. This validator\'s record as the network sees it: <code>curl -s "https://scan.sv-3.example/api/scan/v0/validators/validator-faucets?validator_ids=$PARTY" | jq</code>. An empty list means no round has been recorded yet; a new round opens about every 10 minutes. lastCollectedInRound should equal the current round.'),
+          '判断验证者是否跟上，要看两个数：scan 报告的网络当前轮次，和网络看到的本验证者最后记录活动的轮次（lastCollectedInRound）。列表为空说明还没有记录过任何一轮；新的一轮大约每 10 分钟开始一次，等一轮再查。',
+          'Whether a validator keeps up comes down to two numbers: the round the network is in, from a scan, and the last round the network saw this validator record activity for (lastCollectedInRound). An empty list means no round has been recorded yet; a new round opens about every 10 minutes, so wait for one and query again.'),
+        cmds: [
+          'curl -s https://scan.sv-3.example/api/scan/v0/round-of-latest-data',
+          'curl -s "https://scan.sv-3.example/api/scan/v0/validators/validator-faucets?validator_ids=$PARTY" | jq',
+        ],
+        wait: 600,
         after: LL(
           '同步监控做的就是这个比较：SV scan 报告的网络轮次，对比验证者最后记录的轮次。容器健康检查看不出这一点。每记录一轮就有一份活跃奖励；节点停机期间错过的轮次无法补回。参见基础课第 4 章和第 7 章。',
           'This is the comparison a sync monitor makes: the network round from the SV scans against the round the validator last recorded. Container health checks cannot show it. Each recorded round earns a liveness reward, and a round missed while the node is down cannot be made up. See fundamentals chapters 4 and 7.'),
@@ -632,8 +691,12 @@
       {
         text: LL('查看 traffic：基础额度、extra traffic 和自动充值', 'Check traffic: the base rate, extra traffic and the top-up setting'),
         how: LL(
-          '<code>docker logs splice-validator-validator-1 | grep -i traffic</code>。第一行是应用实际使用的充值设置；TopupMemberTrafficTrigger 的几行给出剩余的 extra traffic、免费的基础额度，以及为什么还没有购买。再确认运行中的容器拿到了这个设置：<code>docker inspect splice-validator-validator-1 | grep TARGET</code>。',
-          '<code>docker logs splice-validator-validator-1 | grep -i traffic</code>. The first line shows the top-up settings the app runs with. The TopupMemberTrafficTrigger lines show the extra traffic left, the free base-rate allowance, and why nothing has been bought yet. Then confirm the running container has the setting: <code>docker inspect splice-validator-validator-1 | grep TARGET</code>.'),
+          '验证者应用的日志里，第一条 traffic 行是它实际使用的充值设置；TopupMemberTrafficTrigger 的几行给出剩余的 extra traffic、免费的基础额度，以及为什么还没有购买。再确认运行中的容器拿到了这个设置。',
+          'In the validator app log, the first traffic line shows the top-up settings the app runs with. The TopupMemberTrafficTrigger lines show the extra traffic left, the free base-rate allowance, and why nothing has been bought yet. Then confirm the running container has the setting.'),
+        cmds: [
+          'docker logs splice-validator-validator-1 | grep -i traffic',
+          'docker inspect splice-validator-validator-1 | grep TARGET',
+        ],
         after: LL(
           '新验证者的钱包是空的，也没有 extra traffic。在这个练习里，它最初的提交，包括每一轮的活动记录，都在免费的基础额度之内。活跃奖励逐渐充实钱包，够买一次的时候，应用就按目标吞吐量购买 extra traffic。参见基础课第 5 章。',
           'A new validator starts with an empty wallet and no extra traffic. In this lab its first submissions, including the per-round activity records, fit within the free base rate. Liveness rewards fill the wallet, and once it holds enough CC for one purchase the app buys extra traffic at the target throughput. See fundamentals chapter 5.'),
@@ -642,8 +705,15 @@
       {
         text: LL('备份数据库并检查备份', 'Back up the databases and check the backup'),
         how: LL(
-          'postgres 容器里有两个数据库：validator，以及按迁移 ID 命名的 participant-4。把两个都导出到主机上：<code>mkdir -p /root/backups</code>、<code>docker exec splice-validator-postgres-splice-1 pg_dump -U cnadmin validator &gt; /root/backups/validator.sql</code>、<code>docker exec splice-validator-postgres-splice-1 pg_dump -U cnadmin participant-4 &gt; /root/backups/participant-4.sql</code>。检查：<code>ls -l /root/backups</code>，<code>grep COPY /root/backups/participant-4.sql</code>。',
-          'The postgres container holds two databases: validator, and participant-4, named after the migration ID. Dump both to the host: <code>mkdir -p /root/backups</code>, <code>docker exec splice-validator-postgres-splice-1 pg_dump -U cnadmin validator &gt; /root/backups/validator.sql</code>, <code>docker exec splice-validator-postgres-splice-1 pg_dump -U cnadmin participant-4 &gt; /root/backups/participant-4.sql</code>. Check them: <code>ls -l /root/backups</code> and <code>grep COPY /root/backups/participant-4.sql</code>.'),
+          'postgres 容器里有两个数据库：validator，以及按迁移 ID 命名的 participant-4。把两个都导出到主机上的 <code>/root/backups</code>，然后检查文件大小和导出的表。',
+          'The postgres container holds two databases: validator, and participant-4, named after the migration ID. Dump both to <code>/root/backups</code> on the host, then check the file sizes and the tables in the dump.'),
+        cmds: [
+          'mkdir -p /root/backups',
+          'docker exec splice-validator-postgres-splice-1 pg_dump -U cnadmin validator > /root/backups/validator.sql',
+          'docker exec splice-validator-postgres-splice-1 pg_dump -U cnadmin participant-4 > /root/backups/participant-4.sql',
+          'ls -l /root/backups',
+          'grep COPY /root/backups/participant-4.sql',
+        ],
         after: LL(
           '和节点放在同一块磁盘上的备份，扛不住整台主机的损失。要定期把导出文件复制到别处，并像保管密钥一样保管它们：participant 的导出里包含节点的私钥。Splice 还提供通过验证者应用导出节点身份的方法，导出结果应和数据库备份放在一起。参见基础课第 7 章。',
           'A backup on the node\'s own disk does not survive the loss of the host. Copy the dumps elsewhere on a schedule and guard them like keys: the participant dump contains the node\'s private keys. Splice also documents an export of the node identities through the validator app; keep it with the database backups. See fundamentals chapter 7.'),

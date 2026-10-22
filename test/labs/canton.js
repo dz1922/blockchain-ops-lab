@@ -18,13 +18,106 @@ const play = (scenario, parts, settle) => `(async () => {
     alerts: Object.values(VSIM.w.alerts).map(a => a.name + ':' + a.state),
     events: VSIM.w.events.map(e => VSIM.S.tr(e.html).replace(/<[^>]+>/g, '')).slice(-12) };
 })()`;
+// the guided lab (R1) builds canton-new from scratch
+const playNew = (parts, settle) => `(async () => {
+  const o = [];
+  const run = async c => { o.push('$ ' + c + '\\n' + await T.cmd(c)); };
+  const parts = ${JSON.stringify(parts)};
+  for (const p of parts) {
+    if (p.js) { eval(p.js); continue; }
+    if (p.adv) { await T.adv(p.adv); continue; }
+    await run(p);
+  }
+  await T.adv(${settle});
+  const n = VSIM.w.nodes['canton-new'], cn = n.cn;
+  return { out: o.join('\\n----\\n'), done: VSIM.w.done, result: VSIM.w.result, obj: VSIM.w.objState, step: VSIM.w.stepIdx, viol: VSIM.w.violations,
+    state: { party: cn.party, onboarded: cn.onboarded, recorded: cn.recorded, missed: cn.missed, base: Math.round(cn.base), wallet: cn.wallet, identityLost: cn.identityLost,
+      ctrs: Object.values(cn.ctrs).map(r => [r.svc, r.image.split(':').pop(), r.state, r.health]) },
+    events: VSIM.w.events.map(e => VSIM.S.tr(e.html).replace(/<[^>]+>/g, '')).slice(-14) };
+})()`;
 const solved = r => r.result && r.result.success ? [] : ['lab not completed'];
 const flagged = f => r => r.viol && r.viol[f] !== undefined ? [] : [`${f} not flagged`];
 
 const BUY = String.raw`curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"receiving_validator_party_id\":\"$PARTY\",\"domain_id\":\"$DOMAIN\",\"traffic_amount\":400000,\"tracking_id\":\"manual-topup-1\"}" http://wallet.localhost/api/validator/v0/wallet/buy-traffic-requests`;
 const BUY_SPONSOR = String.raw`curl -s -X POST -H "Authorization: Bearer $TOKEN" -d "{\"receiving_validator_party_id\":\"$SP\",\"domain_id\":\"$DOMAIN\",\"traffic_amount\":400000,\"tracking_id\":\"oops-1\"}" http://wallet.localhost/api/validator/v0/wallet/buy-traffic-requests`;
 
+const BUNDLE = v => `curl -sSL -o ${v}_splice-node.tar.gz https://github.com/canton-network/splice/releases/download/${v}/${v}_splice-node.tar.gz`;
+const SECRET = 'SECRET=$(curl -s -X POST https://sv.sv-3.example/api/sv/v0/onboard/validator/prepare)';
+const OLD_SECRET = { js: 'VSIM.sh.sess.env.SECRET = Object.keys(VSIM.w.chain.secrets).find(k => VSIM.w.chain.secrets[k].node === "canton-01")' };
+const CONFIGURE = [
+  "sed -i 's/MIGRATION_ID=.*/MIGRATION_ID=4/' .env",
+  "sed -i 's|SPONSOR_SV_ADDRESS=.*|SPONSOR_SV_ADDRESS=https://sv.sv-3.example|' .env",
+  "sed -i 's|SCAN_ADDRESS=.*|SCAN_ADDRESS=https://scan.sv-3.example|' .env",
+  'sed -i "s/ONBOARDING_SECRET=.*/ONBOARDING_SECRET=$SECRET/" .env',
+  "sed -i 's/PARTY_HINT=.*/PARTY_HINT=acme-validator-1/' .env",
+  "sed -i 's/TARGET_TRAFFIC_THROUGHPUT=.*/TARGET_TRAFFIC_THROUGHPUT=2000/' .env",
+];
+
 module.exports = [
+  {
+    name: 'run', // R1: every step of the guided lab, in order, with the commands its how text gives
+    scenario: 'canton-run',
+    steps: playNew([
+      'cat ~/NOTES.md',
+      'ssm canton-new', 'sudo -i',
+      'docker --version', 'docker compose version', 'df -h', 'docker ps',
+      'curl -s https://scan.sv-3.example/api/scan/version',
+      'curl -s https://scan.sv-1.example/api/scan/version',
+      'curl -s https://scan.sv-2.example/api/scan/version',
+      'curl -s https://scan.sv-4.example/api/scan/version',
+      "curl -s https://scan.sv-3.example/api/scan/v0/scans | jq -r '.scans[0].scans[].publicUrl'",
+      'curl -s https://api.github.com/repos/canton-network/splice/releases/latest | jq -r .tag_name',
+      BUNDLE('0.8.3'),
+      "curl -s https://api.github.com/repos/canton-network/splice/releases/tags/0.8.3 | jq -r '.assets[0].digest'",
+      'sha256sum 0.8.3_splice-node.tar.gz',
+      'tar xzf 0.8.3_splice-node.tar.gz -C /opt',
+      `cd ${DIR}`, 'ls -a',
+      SECRET, 'echo $SECRET',
+      "curl -s https://scan.sv-3.example/api/scan/v0/dso-sequencers | jq '.domainSequencers[0].sequencers[0].migrationId'",
+      ...CONFIGURE.slice(0, 4), "grep -v '^#' .env",
+      ...CONFIGURE.slice(4), "grep -E 'PARTY_HINT|TRAFFIC|TOPUP' .env",
+      'docker compose up -d', 'docker compose ps',
+      { adv: 180 },
+      'docker logs --tail 20 splice-validator-validator-1', 'docker logs --tail 5 splice-validator-participant-1', 'docker compose ps',
+      { adv: 30 },
+      'PARTY=$(docker logs splice-validator-validator-1 | grep "Allocated validator" | sed \'s/.*party //\')', 'echo $PARTY',
+      { adv: 30 },
+      'curl -s https://scan.sv-3.example/api/scan/v0/round-of-latest-data',
+      'curl -s "https://scan.sv-3.example/api/scan/v0/validators/validator-faucets?validator_ids=$PARTY" | jq',
+      { adv: 30 },
+      'docker logs splice-validator-validator-1 | grep -i traffic', 'docker inspect splice-validator-validator-1 | grep TARGET',
+      { adv: 30 },
+      'mkdir -p /root/backups',
+      'docker exec splice-validator-postgres-splice-1 pg_dump -U cnadmin validator > /root/backups/validator.sql',
+      'docker exec splice-validator-postgres-splice-1 pg_dump -U cnadmin participant-4 > /root/backups/participant-4.sql',
+      'ls -l /root/backups', 'grep COPY /root/backups/participant-4.sql', 'docker exec splice-validator-postgres-splice-1 pg_dump -U cnadmin participant-3',
+    ], 60),
+    expect: r => solved(r).concat(r.viol && Object.keys(r.viol).length ? ['unexpected violation'] : []),
+  },
+  {
+    name: 'runAhead', // R1 trap: start on the newest GitHub release, ahead of the SV quorum
+    scenario: 'canton-run',
+    steps: playNew([
+      'ssm canton-new', 'sudo -i',
+      'curl -s https://api.github.com/repos/canton-network/splice/releases/latest | jq -r .tag_name',
+      BUNDLE('0.8.4'), 'tar xzf 0.8.4_splice-node.tar.gz -C /opt', `cd ${DIR}`,
+      SECRET, ...CONFIGURE, 'docker compose up -d',
+    ], 300),
+    expect: flagged('ahead_of_quorum'),
+  },
+  {
+    name: 'runWipe', // R1 trap: reuse canton-01's secret, onboarding fails, then down -v to "start clean"
+    scenario: 'canton-run',
+    steps: playNew([
+      'ssm canton-new', 'sudo -i',
+      BUNDLE('0.8.3'), 'tar xzf 0.8.3_splice-node.tar.gz -C /opt', `cd ${DIR}`,
+      OLD_SECRET, ...CONFIGURE, 'docker compose up -d',
+      { adv: 300 },
+      'docker logs --tail 6 splice-validator-validator-1', 'docker compose ps',
+      'docker compose down -v', 'docker compose up -d',
+    ], 300),
+    expect: r => flagged('wipe_db')(r).concat(r.result && r.result.success ? ['lab should not succeed after a wipe'] : []),
+  },
   {
     name: 'traffic', // C1: read the log, buy traffic for the validator's own party, re-enable top-ups with compose up -d
     scenario: 'canton-traffic',

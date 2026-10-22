@@ -28,6 +28,9 @@
   const MIN_TOPUP = 200000;     // bytes; smallest traffic purchase the network accepts
   const USD_PER_MB = 60, CC_USD = 0.16, REWARD = 4.1, RECORD_BYTES = 2400;
   const RED_LINE = 50000;       // dashboard threshold for Traffic Remainder
+  // fresh install (cfg.fresh, the guided lab): a free base-rate allowance that refills over a window
+  const BASE_BURST = 400000, BASE_WINDOW = 1200;
+  const FRESH_KEYS = ['ONBOARDING_SECRET', 'SPONSOR_SV_ADDRESS', 'SCAN_ADDRESS'];
   const GB = 1073741824;
   const ccFor = b => b / 1e6 * USD_PER_MB / CC_USD;
   const hex = (seed, len) => { const r = S.rng(seed); let s = ''; for (let i = 0; i < len; i++) s += '0123456789abcdef'[Math.floor(r() * 16)]; return s; };
@@ -88,6 +91,12 @@
   const parseSize = s => { const m = /^(\d+(?:\.\d+)?)\s*([kmg])?b?$/i.exec(String(s || '')); if (!m) return 0; return +m[1] * ({ k: 1 / 1048576, m: 1 / 1024, g: 1 }[(m[2] || 'm').toLowerCase()]); };
   const logCap = opts => opts && opts['max-size'] ? parseSize(opts['max-size']) * (parseInt(opts['max-file'] || '1', 10) || 1) : 0;
 
+  // traffic: a fresh install draws on the free base-rate allowance before purchased extra traffic
+  function spend(cn, bytes) {
+    if (cn.fresh) { const x = Math.min(cn.base, bytes); cn.base -= x; bytes -= x; }
+    cn.remainder = Math.max(0, cn.remainder - bytes);
+  }
+
   /* ---------- disk accounting (GB) ---------- */
   function diskParts(n) {
     const cn = n.cn;
@@ -107,7 +116,7 @@
     Object.entries(OS).forEach(([k, v]) => out.push({ p: k, gb: cn.osGB * v / tot }));
     out.push({ p: '/var/lib/docker/overlay2', gb: p.imgs });
     out.push({ p: '/var/lib/docker/image', gb: 0.02 });
-    out.push({ p: '/var/lib/docker/volumes/ledger-indexer_data/_data', gb: cn.auxGB });
+    if (cn.auxGB) out.push({ p: '/var/lib/docker/volumes/ledger-indexer_data/_data', gb: cn.auxGB });
     if (cn.vol && cn.vol.gb > 0) {
       out.push({ p: VOLP + '/_data/base', gb: Math.max(0.01, cn.vol.gb - 1.1) });
       out.push({ p: VOLP + '/_data/pg_wal', gb: Math.min(1, cn.vol.gb * 0.4) });
@@ -221,6 +230,7 @@
     rec.health = 'healthy';
     const tag = tagOf(rec.image);
     if (rec.svc === 'postgres-splice') pglog(w, n, 'INFO', 'LOG', 'database system is ready to accept connections');
+    if (rec.svc === 'participant' && cn.fresh) { freshParticipantReady(w, n, rec); return; }
     if (rec.svc === 'participant') {
       if (cn.vol && cn.vol.fresh) {
         cn.vol.fresh = false; cn.identityLost = true;
@@ -235,7 +245,55 @@
     if (rec.svc === 'validator') {
       clog(w, n, rec, 'INFO', LOGGER.app, `Validator app is ready; validator party ${cn.party}`);
       cn.nextTopup = w.t; cn.nextTopupNote = w.t;
+      if (cn.fresh) { cn.everReady = true; cn.nextFundNote = 0; }
     }
+  }
+  // fresh install: the first start of a participant on an empty database creates its namespace key
+  function freshParticipantReady(w, n, rec) {
+    const cn = n.cn, tag = tagOf(rec.image);
+    if (cn.vol && cn.vol.fresh) {
+      cn.vol.fresh = false;
+      if (cn.onboarded) { cn.identityLost = true; cn.oldParty = cn.party; }
+      cn.onboarded = false; cn.party = null;
+      cn.gen = (cn.gen || 0) + 1;
+      cn.ns = '1220' + hex(606 + cn.gen * 31, 64);
+      const env = readEnv(w, n) || {};
+      cn.participantId = `PAR::${env.PARTY_HINT || 'participant'}::${cn.ns}`;
+      clog(w, n, rec, cn.identityLost ? 'WARN' : 'INFO', LOGGER.boot, `No node identity found in the database; generating a new namespace key. Participant id ${cn.participantId}`);
+      if (cn.identityLost) S.lesson(w, 'identity', LL('数据库里保存着节点身份', 'The database holds the node identity'), LL('participant 的命名空间密钥、party 与交易历史都在 postgres 卷里。删掉这个卷，节点启动时会生成一个全新的身份。原来的 validator party、它持有的 CC 和累计的奖励都无法再由这台节点控制，只能从身份备份恢复，或者重新申请上线。', 'The participant\'s namespace key, its parties and the transaction history live in the postgres volume. Delete that volume and the node starts with a brand-new identity. The old validator party, the CC it holds and its accrued rewards are no longer controlled by this node; only an identity backup or a new onboarding gets the operator back.'));
+    }
+    if (S.semverCmp(tag, cn.dbVersion) > 0) { cn.dbVersion = tag; clog(w, n, rec, 'INFO', LOGGER.db, `Database migrations for Splice ${tag} applied`); }
+    clog(w, n, rec, 'INFO', LOGGER.boot, `Participant ${cn.participantId} initialised`);
+    if (cn.onboarded) clog(w, n, rec, 'INFO', LOGGER.sync, `Connected to synchronizer ${DOMAIN} through 13 SV sequencers (read threshold 5)`);
+    else clog(w, n, rec, 'INFO', LOGGER.sync, 'Not connected to any synchronizer; waiting for the validator app to onboard this participant');
+  }
+  // fresh install: the validator app onboards the participant with the sponsoring SV, then allocates the validator party
+  function onboardStep(w, n) {
+    const cn = n.cn, v = bySvc(n, 'validator'), p = bySvc(n, 'participant');
+    if (!running(v) || cn.onboarded || !healthy(p) || !cn.ns) return;
+    if (w.t - v.started < 20 || w.t < (v.nextOnboard || 0)) return;
+    v.nextOnboard = w.t + 60;
+    const e = v.env, sec = e.ONBOARDING_SECRET || '', sponsor = (e.SPONSOR_SV_ADDRESS || '').replace(/\/$/, '');
+    const fail = msg => vlog(w, n, 'ERROR', LOGGER.onboard, msg + ' Retrying in 60s.');
+    const m = /^https:\/\/sv\.(sv-\d+)\.example$/.exec(sponsor);
+    if (!sponsor) return fail('SPLICE_APP_VALIDATOR_SV_SPONSOR_ADDRESS is not set; cannot onboard.');
+    vlog(w, n, 'INFO', LOGGER.onboard, `Onboarding participant ${cn.participantId.slice(0, 40)}… through sponsor ${sponsor}`);
+    if (!m || !w.chain.svs.some(x => x.name === m[1])) return fail(`Failed to reach the sponsor SV at ${sponsor}: Could not resolve host.`);
+    if (!sec) return fail('No onboarding secret configured (ONBOARDING_SECRET). Request one from the sponsoring SV.');
+    const s = w.chain.secrets[sec];
+    if (!s || s.sv !== m[1]) return fail(`The sponsor SV rejected the onboarding request: HTTP 401 Unauthorized: unknown or expired onboarding secret.`);
+    if (s.usedBy && s.usedBy !== cn.participantId) {
+      S.lesson(w, 'secretonce', LL('上线密钥只能用一次', 'An onboarding secret works once'), LL('担保 SV 发出的上线密钥只能用一次，并且有有效期。密钥一旦被某个 participant 用掉，就和那个身份绑定在一起，换一台节点或换一个身份都不能再用。每台新节点都要单独申请。', 'An onboarding secret from the sponsoring SV can be used once, and it expires. Once a participant has used it, it is bound to that identity; another node, or a new identity on the same node, cannot reuse it. Request a separate secret for every new node.'));
+      return fail('The sponsor SV rejected the onboarding request: HTTP 409 Conflict: this onboarding secret has already been used.');
+    }
+    if (String(e.MIGRATION_ID) !== String(w.chain.migrationId)) return fail(`No sequencers found for migration id ${e.MIGRATION_ID || '(empty)'}; the synchronizer's current migration id is ${w.chain.migrationId}.`);
+    if (!e.PARTY_HINT) return fail('PARTY_HINT is not set; cannot allocate the validator party.');
+    s.usedBy = cn.participantId;
+    cn.party = `${e.PARTY_HINT}::${cn.ns}`; s.usedByParty = cn.party;
+    cn.onboarded = true; cn.onboardedAt = w.t; cn.identityLost = false; cn.lag = 1.5;
+    vlog(w, n, 'INFO', LOGGER.onboard, `Sponsor ${m[1]} accepted the onboarding request; participant ${cn.participantId.slice(0, 40)}… is authorized on synchronizer ${DOMAIN.slice(0, 30)}…`);
+    plog(w, n, 'INFO', LOGGER.sync, `Connected to synchronizer ${DOMAIN} through 13 SV sequencers (read threshold 5)`);
+    vlog(w, n, 'INFO', LOGGER.onboard, `Allocated validator party ${cn.party}`);
   }
   function healthStep(w, n, rec) {
     if (rec.state !== 'running') return;
@@ -243,7 +301,7 @@
     let ok = true;
     if (rec.svc === 'postgres-splice') ok = !cn.pgCorrupt;
     else if (rec.svc === 'participant') ok = healthy(bySvc(n, 'postgres-splice')) && S.semverCmp(tagOf(rec.image), cn.dbVersion) >= 0;
-    else if (rec.svc === 'validator') { const p = bySvc(n, 'participant'); ok = healthy(p) && !cn.identityLost && String(rec.env.MIGRATION_ID) === String(w.chain.migrationId) && tagOf(p.image) === tagOf(rec.image); }
+    else if (rec.svc === 'validator') { const p = bySvc(n, 'participant'); ok = healthy(p) && !cn.identityLost && String(rec.env.MIGRATION_ID) === String(w.chain.migrationId) && tagOf(p.image) === tagOf(rec.image) && (!cn.fresh || cn.onboarded); }
     const boot = rec.spec.boot + (rec.migrating ? 45 : 0);
     if (ok) {
       rec.badSince = null;
@@ -255,7 +313,7 @@
       if (rec.health !== 'unhealthy' && w.t - rec.badSince >= 60 && (rec.health === 'healthy' || w.t - rec.started >= 150)) {
         rec.health = 'unhealthy';
         if (rec.svc === 'participant') clog(w, n, rec, 'ERROR', LOGGER.db, healthy(bySvc(n, 'postgres-splice')) ? 'Participant cannot start: database schema is from a newer release' : 'Failed to connect to postgres-splice:5432: Connection refused. Retrying.');
-        if (rec.svc === 'validator') {
+        if (rec.svc === 'validator' && !(cn.fresh && !cn.onboarded)) {
           if (cn.identityLost) clog(w, n, rec, 'ERROR', LOGGER.onboard, `Onboarding of ${cn.party} failed: the onboarding secret has already been used by ${PARTY}`);
           else if (String(rec.env.MIGRATION_ID) !== String(w.chain.migrationId)) clog(w, n, rec, 'ERROR', LOGGER.app, `Configured MIGRATION_ID ${rec.env.MIGRATION_ID} does not match the synchronizer's current migration id ${w.chain.migrationId}`);
           else clog(w, n, rec, 'ERROR', LOGGER.app, 'Ledger API of the participant is unavailable; readiness check failing');
@@ -295,6 +353,7 @@
     });
     cn.full = diskUsed(n) >= n.disk.size - 0.01;
     if (dockerUp(n)) Object.values(cn.ctrs).forEach(rec => healthStep(w, n, rec));
+    if (cn.fresh && dockerUp(n)) onboardStep(w, n);
     const p = bySvc(n, 'participant'), v = bySvc(n, 'validator');
     const proc = processing(n);
     if (proc) {
@@ -303,6 +362,8 @@
       cn.lag = Math.max(1.2 + w.rand() * 0.6, cn.lag - CATCHUP * dt);
       if (was > LAG_OK && cn.lag <= LAG_OK) { plog(w, n, 'INFO', LOGGER.seq, 'Caught up with the sequencers; processing live events'); S.event(w, 'ok', LL('participant 已追上 sequencer。', 'The participant has caught up with the sequencers.')); }
     } else cn.lag += dt;
+    if (cn.fresh && !cn.onboarded) cn.lag = 1.5;   // not yet connected: nothing to fall behind on
+    if (cn.fresh) cn.base = Math.min(BASE_BURST, cn.base + BASE_BURST / BASE_WINDOW * dt);
     // disk full: postgres cannot extend its files; the participant stops persisting events
     if (cn.full && dockerUp(n) && w.t >= cn.nextFullLog) {
       cn.nextFullLog = w.t + 60;
@@ -315,9 +376,10 @@
     if (cn.pgCorrupt && dockerUp(n) && w.t >= cn.nextPanic) { cn.nextPanic = w.t + 30; pglog(w, n, 'FATAL', 'PANIC', 'could not locate a valid checkpoint record'); }
     // traffic: every submission consumes purchased extra traffic
     const vOk = healthy(v);
-    if (proc && cn.lag < LAG_OK && running(v)) cn.remainder = Math.max(0, cn.remainder - cn.consume * dt);
+    if (proc && cn.lag < LAG_OK && running(v) && (!cn.fresh || cn.onboarded)) spend(cn, cn.consume * dt);
     // rounds and liveness activity
     const r = netRound(w);
+    if (cn.fresh && !cn.everReady) { cn.lastRound = r; cn.ourRound = r - 1; }   // not a validator yet: no round to miss
     if (r > cn.lastRound) {
       for (let k = cn.lastRound; k < r; k++) if (cn.ourRound < k) { cn.missed++; if (running(v)) vlog(w, n, 'WARN', LOGGER.coupon, `Round ${k} closed without a liveness activity record for ${cn.party.slice(0, 26)}…`); }
       cn.lastRound = r;
@@ -326,8 +388,9 @@
     if (canRec && cn.ourRound < r) {
       if (!versionOk(w, n)) {
         if (w.t >= cn.nextPkgErr) { cn.nextPkgErr = w.t + 120; vlog(w, n, 'ERROR', LOGGER.pkg, `AmuletRules now require splice-amulet from Splice ${w.chain.required}; this node runs ${localTag(n)}. Cannot record activity for round ${r}. Upgrade the validator.`); }
-      } else if (cn.remainder > 0) {
-        cn.ourRound = r; cn.remainder = Math.max(0, cn.remainder - RECORD_BYTES); cn.wallet += REWARD; cn.recorded++;
+      } else if (cn.remainder > 0 || (cn.fresh && cn.base >= RECORD_BYTES)) {
+        cn.ourRound = r; spend(cn, RECORD_BYTES); cn.wallet += REWARD; cn.recorded++;
+        if (cn.firstRound == null) cn.firstRound = r;
         vlog(w, n, 'INFO', LOGGER.coupon, `Recorded validator liveness activity for round ${r}`);
       } else if (w.t >= cn.nextTrafficErr) {
         cn.nextTrafficErr = w.t + 60;
@@ -335,7 +398,7 @@
         vlog(w, n, 'ERROR', LOGGER.coupon, `Failed to record liveness activity for round ${r}: ABORTED: SEQUENCER_NOT_ENOUGH_TRAFFIC_CREDIT. Will retry.`);
       }
     }
-    if (cn.remainder <= 0 && !cn.saidEmpty && proc) {
+    if (!cn.fresh && cn.remainder <= 0 && !cn.saidEmpty && proc) {
       cn.saidEmpty = true;
       S.event(w, 'bad', LL('extra traffic 已用完。participant 提交的交易开始被 sequencer 拒绝。', 'Extra traffic is used up. The sequencers start rejecting the participant\'s submissions.'));
       S.lesson(w, 'traffic', LL('每一笔提交都要消耗 traffic', 'Every submission consumes traffic'), LL('向 Global Synchronizer 提交交易，按字节消耗 traffic。traffic 用 CC 购买，验证者应用可以按 target-throughput 自动补充。买来的 traffic 用完后，只剩一点免费的基础额度，不够日常运行：读取照常，提交失败，每一轮的活动记录都写不进去。', 'Submitting to the Global Synchronizer consumes traffic, counted in bytes. Traffic is bought with CC, and the validator app can top it up automatically at a target throughput. Once the purchased traffic is gone only a small free base rate remains, which is not enough for normal operation: reads still work, submissions fail, and no round gets its activity record.'));
@@ -355,6 +418,8 @@
             cn.wallet -= cost; cn.spent += cost;
             cn.pending.push({ at: w.t + 30, bytes: amt, party: cn.party, auto: true });
             vlog(w, n, 'INFO', LOGGER.topup, `Buying ${fmtB(amt)} bytes of extra traffic for ${cost.toFixed(4)} CC (target-throughput ${tgt} B/s, min-topup-interval ${iv}s)`);
+          } else if (cn.fresh) {
+            if (w.t >= cn.nextFundNote) { cn.nextFundNote = w.t + 600; vlog(w, n, 'INFO', LOGGER.topup, `Extra traffic: ${fmtB(cn.remainder)} bytes; base rate available: ${fmtB(cn.base)} of ${fmtB(BASE_BURST)} bytes. The next top-up (${fmtB(amt)} bytes) costs ${cost.toFixed(4)} CC and the wallet holds ${cn.wallet.toFixed(4)} CC; waiting for funds.`); }
           } else vlog(w, n, 'WARN', LOGGER.topup, `Insufficient funds for a traffic top-up: need ${cost.toFixed(4)} CC, the wallet holds ${cn.wallet.toFixed(4)} CC`);
         }
       } else if (w.t >= cn.nextTopupNote) {
@@ -383,10 +448,10 @@
       const cap = logCap(rec.logOpts); if (cap) L.gb = Math.min(L.gb, cap);
     });
     // version watcher (systemd timer, every 15 min)
-    if (w.t >= cn.watch.next) { cn.watch.next = w.t + 900; if (n.services['splice-version-watcher'].enabled !== false) runWatcher(w, n); }
+    if (w.t >= cn.watch.next && n.services['splice-version-watcher']) { cn.watch.next = w.t + 900; if (n.services['splice-version-watcher'].enabled !== false) runWatcher(w, n); }
     // bookkeeping
     if (!vOk) cn.vDown += dt;
-    ['grafana-agent', 'node_exporter'].forEach(k => { const s = n.services[k]; if (s.state !== 'active') s.downFor = (s.downFor || 0) + dt; else s.downFor = 0; });
+    ['grafana-agent', 'node_exporter'].forEach(k => { const s = n.services[k]; if (!s) return; if (s.state !== 'active') s.downFor = (s.downFor || 0) + dt; else s.downFor = 0; });
     cn.peakPct = Math.max(cn.peakPct || 0, diskPct(n));
   }
 
@@ -507,6 +572,15 @@
       const sv = w.chain.svs[+m[1] - 1];
       if (!sv) return null;
       if (!n) return { status: 403, body: '<html><head><title>403 Forbidden</title></head><body><center><h1>403 Forbidden</h1></center><center>Request blocked: source IP is not an allowlisted validator</center></body></html>' };
+      if (n.cn.fresh) {
+        n.cn.seen.scan = w.t;
+        if (req.path === '/api/scan/v0/validators/validator-faucets') {
+          const ids = req.query.getAll('validator_ids').flatMap(x => x.split(','));
+          const cn = n.cn, mine = cn.party && cn.recorded > 0 && ids.includes(cn.party);
+          if (mine) cn.seen.faucet = w.t;
+          return J(200, { validatorsReceivedFaucets: mine ? [{ validator: cn.party, numRoundsCollected: cn.recorded, numRoundsMissed: cn.missed, firstCollectedInRound: cn.firstRound, lastCollectedInRound: cn.ourRound }] : [] });
+        }
+      }
       if (req.path === '/api/scan/version') return J(200, { version: sv.v, commit_ts: '2026-09-30T11:04:52Z' });
       if (req.path === '/api/scan/v0/scans') return J(200, { scans: [{ domainId: DOMAIN, scans: w.chain.svs.map(s => ({ publicUrl: `https://scan.${s.name}.example`, svName: s.name })) }] });
       if (req.path === '/api/scan/v0/dso-sequencers') return J(200, { domainSequencers: [{ domainId: DOMAIN, sequencers: w.chain.svs.map(s => ({ migrationId: w.chain.migrationId, url: `https://sequencer-${w.chain.migrationId}.${s.name}.example`, svName: s.name })) }] });
@@ -516,6 +590,25 @@
     if (h === 'api.github.com' && /^\/repos\/canton-network\/splice\/releases(\/latest)?$/.test(req.path)) {
       const rel = v => ({ tag_name: v, name: `Splice ${v}`, html_url: `https://github.com/canton-network/splice/releases/tag/${v}`, prerelease: false });
       return req.path.endsWith('/latest') ? J(200, rel(w.chain.latest)) : J(200, [...w.chain.released].reverse().map(rel));
+    }
+    if (w.chain.fresh && h === 'api.github.com' && (m = /^\/repos\/canton-network\/splice\/releases\/tags\/(.+)$/.exec(req.path))) {
+      if (!w.chain.released.includes(m[1])) return J(404, { message: 'Not Found', documentation_url: 'https://docs.github.com/rest/releases/releases#get-a-release-by-tag-name', status: '404' });
+      if (n && n.cn.seen) n.cn.seen.digest = m[1];
+      const f = `${m[1]}_splice-node.tar.gz`;
+      return J(200, { tag_name: m[1], name: `Splice ${m[1]}`, prerelease: false, assets: [{ name: f, content_type: 'application/gzip', size: 2214031, digest: 'sha256:' + sha256(bundle(m[1])), browser_download_url: `https://github.com/canton-network/splice/releases/download/${m[1]}/${f}` }] });
+    }
+    if (w.chain.fresh && h === 'github.com' && (m = /^\/canton-network\/splice\/releases\/download\/([^/]+)\/([^/]+)$/.exec(req.path))) {
+      if (!w.chain.released.includes(m[1]) || m[2] !== `${m[1]}_splice-node.tar.gz`) return { status: 404, body: 'Not Found' };
+      return { status: 200, body: bundle(m[1]), size: 2214031, wait: 2 };
+    }
+    if (w.chain.fresh && (m = /^sv\.(sv-\d+)\.example$/.exec(h)) && w.chain.svs.some(x => x.name === m[1])) {
+      if (!n) return { status: 403, body: '<html><head><title>403 Forbidden</title></head><body><center><h1>403 Forbidden</h1></center><center>Request blocked: source IP is not an allowlisted validator</center></body></html>' };
+      if (req.path !== '/api/sv/v0/onboard/validator/prepare') return J(404, { error: 'The requested resource could not be found.' });
+      if (req.method !== 'POST') return J(405, { error: 'HTTP method not allowed, supported methods: POST' });
+      const ch = w.chain; ch.secretSeq = (ch.secretSeq || 0) + 1;
+      const sec = hex(800 + ch.secretSeq * 97, 40);
+      ch.secrets[sec] = { sv: m[1], node: n.id, usedBy: null, at: w.t };
+      return { status: 200, body: sec };
     }
     if (h === 'github.com' && (m = /^\/canton-network\/splice\/releases\/tag\/(.+)$/.exec(req.path))) {
       if (!w.chain.released.includes(m[1])) return { status: 404, body: 'Not Found' };
@@ -562,15 +655,15 @@
 
   /* ---------- alert rules (names and thresholds from alerting/chain/canton.yaml) ---------- */
   const nodesOf = w => Object.values(w.nodes);
-  const flow = n => n.services['grafana-agent'].state === 'active';
-  const coll = n => flow(n) && n.services['canton-collector'].state === 'active';
+  const flow = n => !!n.services['grafana-agent'] && n.services['grafana-agent'].state === 'active';
+  const coll = n => flow(n) && !!n.services['canton-collector'] && n.services['canton-collector'].state === 'active';
   const rules = [
     { name: 'CantonContainerUnhealthy', severity: 'warning', for: 300, check: w => nodesOf(w).filter(n => coll(n) && unhealthyCount(n) > 0).map(n => ({ instance: n.hostname, summary: `Canton has unhealthy container(s) on ${n.hostname}` })) },
     { name: 'CantonContainersCritical', severity: 'critical', for: 120, check: w => nodesOf(w).filter(n => coll(n) && unhealthyCount(n) >= 3).map(n => ({ instance: n.hostname, summary: `${unhealthyCount(n)} Canton containers unhealthy on ${n.hostname}` })) },
     { name: 'CantonParticipantDown', severity: 'critical', for: 300, check: w => nodesOf(w).filter(n => coll(n) && !upMetric(n, 'participant')).map(n => ({ instance: n.hostname, summary: `Canton participant down on ${n.hostname}` })) },
     { name: 'CantonValidatorDown', severity: 'critical', for: 300, check: w => nodesOf(w).filter(n => coll(n) && !upMetric(n, 'validator')).map(n => ({ instance: n.hostname, summary: `Canton validator app down on ${n.hostname}` })) },
-    { name: 'CantonCollectorDown', severity: 'warning', for: 300, check: w => nodesOf(w).filter(n => flow(n) && n.services['canton-collector'].state !== 'active').map(n => ({ instance: n.hostname, summary: `Canton metrics collector failing on ${n.hostname}` })) },
-    { name: 'CantonAgentHeartbeatMissing', severity: 'critical', for: 0, check: w => nodesOf(w).filter(n => ['grafana-agent', 'node_exporter'].some(k => (n.services[k].downFor || 0) >= 600)).map(n => ({ instance: n.hostname, summary: `Canton monitoring agent lost on ${n.hostname}` })) },
+    { name: 'CantonCollectorDown', severity: 'warning', for: 300, check: w => nodesOf(w).filter(n => flow(n) && n.services['canton-collector'] && n.services['canton-collector'].state !== 'active').map(n => ({ instance: n.hostname, summary: `Canton metrics collector failing on ${n.hostname}` })) },
+    { name: 'CantonAgentHeartbeatMissing', severity: 'critical', for: 0, check: w => nodesOf(w).filter(n => ['grafana-agent', 'node_exporter'].some(k => n.services[k] && (n.services[k].downFor || 0) >= 600)).map(n => ({ instance: n.hostname, summary: `Canton monitoring agent lost on ${n.hostname}` })) },
     { name: 'CantonBehindChainTip', severity: 'warning', for: 300, check: w => nodesOf(w).filter(n => coll(n) && upMetric(n, 'scan-proxy') && behind(w, n) >= 100).map(n => ({ instance: n.hostname, summary: `Canton validator is ${behind(w, n)} rounds behind chain tip on ${n.hostname}` })) },
     { name: 'CantonSeverelyBehindChainTip', severity: 'critical', for: 120, check: w => nodesOf(w).filter(n => coll(n) && upMetric(n, 'scan-proxy') && behind(w, n) >= 1000).map(n => ({ instance: n.hostname, summary: `Canton validator severely behind chain tip (${behind(w, n)} rounds) on ${n.hostname}` })) },
     { name: 'CantonSyncStalled', severity: 'warning', for: 300, check: w => nodesOf(w).filter(n => coll(n) && upMetric(n, 'ledger-indexer') && n.cn.lag > 900).map(n => ({ instance: n.hostname, summary: `Canton chain-tip lag ${Math.round(n.cn.lag)}s on ${n.hostname}` })) },
@@ -616,6 +709,7 @@
   const psObj = (w, r) => ({ ID: r.id.slice(0, 12), Names: r.name, Name: r.name, Image: r.image, Command: r.spec.cmd, Status: statusStr(w, r), State: stateWord(r), Ports: r.state === 'running' ? r.spec.ports : '', RunningFor: `${human(w.t - r.created)} ago`, CreatedAt: iso(w, r.created), Service: r.svc });
   function envList(w, n, r) {
     const base = ['PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'];
+    if (r.svc === 'validator' && n.cn.fresh) return base.concat(Object.entries(r.env).map(([k, v]) => `${k}=${v}`), ['SPLICE_APP_VALIDATOR_PARTICIPANT_ADDRESS=participant', 'SPLICE_APP_VALIDATOR_WALLET_USER_NAME=administrator']);
     if (r.svc === 'validator') return base.concat(Object.entries(r.env).map(([k, v]) => `${k}=${v}`), ['SPLICE_APP_VALIDATOR_PARTICIPANT_ADDRESS=participant', 'SPLICE_APP_VALIDATOR_SCAN_ADDRESS=https://scan.sv-3.example', 'SPLICE_APP_VALIDATOR_SV_SPONSOR_ADDRESS=https://sv.sv-3.example', 'SPLICE_APP_VALIDATOR_WALLET_USER_NAME=administrator']);
     if (r.svc === 'participant') return base.concat(['CANTON_PARTICIPANT_POSTGRES_SERVER=postgres-splice', 'CANTON_PARTICIPANT_POSTGRES_PORT=5432', 'CANTON_PARTICIPANT_POSTGRES_DB=participant-' + w.chain.migrationId, 'AUTH_TARGET_AUDIENCE=https://validator.example']);
     if (r.svc === 'postgres-splice') return base.concat(['POSTGRES_USER=cnadmin', 'POSTGRES_PASSWORD=(redacted)', 'PGDATA=/var/lib/postgresql/data']);
@@ -651,6 +745,13 @@
   function ensureVolume(w, n) {
     if (n.cn.vol) return false;
     n.cn.vol = { gb: 0.05, fresh: true };
+    if (n.cn.fresh) {
+      n.cn.vol.created = w.t;
+      S.fsWrite(n, VOLP + '/_data/global/pg_control', '(binary)', { mode: '600', owner: 'root', size: 8192 });
+      S.fsWrite(n, VOLP + '/_data/base/16384/41877', '(relation data)', { mode: '600', owner: 'root', size: 8192 });
+      S.fsWrite(n, VOLP + '/_data/pg_wal/00000001000000A2000000C7', '(wal segment)', { mode: '600', owner: 'root', size: 16777216 });
+    }
+    if (n.cn.fresh) n.cn.dbVersion = '0.0.0';
     S.fsWrite(n, VOLP + '/_data/PG_VERSION', '14\n', { owner: 'root', mode: '600' });
     return true;
   }
@@ -703,6 +804,13 @@
       if (fresh.length) { last = fresh[fresh.length - 1].e.id; ctx.write(fresh.map(x => render(x.k, x.e)).join('\n') + '\n'); }
     }
   }
+  // fresh install: remember what the operator has been shown in the validator log
+  function markSeen(w, n, r, es) {
+    const cn = n.cn;
+    if (!cn.fresh || r.svc !== 'validator') return;
+    if (cn.party && es.some(e => e.msg.includes(cn.party))) cn.seen.party = w.t;
+    if (es.some(e => /TopupMemberTrafficTrigger|buy-extra-traffic/.test(e.msg))) cn.seen.traffic = w.t;
+  }
   const color = e => e.level === 'ERROR' || e.level === 'FATAL' ? C.red(e.msg) : e.level === 'WARN' ? C.yellow(e.msg) : e.msg;
   const sinceSec = s => { const m = /^(\d+)(s|m|h)$/.exec(s || ''); return m ? +m[1] * ({ s: 1, m: 60, h: 3600 }[m[2]]) : null; };
   async function dLogs(ctx, args) {
@@ -725,6 +833,7 @@
     let es = n.journal[key] || [];
     const s = sinceSec(since); if (s) es = es.filter(e => e.t >= w.t - s);
     if (tail !== null && tail !== 'all') es = es.slice(-Math.max(0, parseInt(tail, 10) || 0));
+    markSeen(w, n, r, es);
     const out = es.map(color).join('\n');
     if (!follow || !ctx.interactive) return out ? out + '\n' : '';
     if (out) ctx.write(out + '\n');
@@ -740,7 +849,7 @@
     names.forEach(x => {
       const r = findCtr(n, x);
       if (r) objs.push(inspectObj(w, n, r));
-      else if (x === VOL && n.cn.vol) objs.push({ CreatedAt: iso(w, -86400 * 160), Driver: 'local', Labels: { 'com.docker.compose.project': PROJECT, 'com.docker.compose.volume': 'postgres-splice' }, Mountpoint: VOLP + '/_data', Name: VOL, Options: null, Scope: 'local' });
+      else if (x === VOL && n.cn.vol) objs.push({ CreatedAt: iso(w, n.cn.vol.created ?? -86400 * 160), Driver: 'local', Labels: { 'com.docker.compose.project': PROJECT, 'com.docker.compose.volume': 'postgres-splice' }, Mountpoint: VOLP + '/_data', Name: VOL, Options: null, Scope: 'local' });
       else missing.push(x);
     });
     let out = fmt ? fmtRows(fmt, objs) : JSON.stringify(objs, null, 4) + '\n';
@@ -760,13 +869,40 @@
     if (c0 === 'env' || c0 === 'printenv') return envList(w, n, r).join('\n') + '\n';
     if (c0 === 'curl' && (r.svc === 'validator' || r.svc === 'participant')) return S.commands.curl(Object.assign({}, ctx, { args: cmd.slice(1), argv0: 'curl', execIn: r }));
     if (c0 === 'pg_isready' && r.svc === 'postgres-splice') return n.cn.pgCorrupt ? err('/var/run/postgresql:5432 - no response', 2) : '/var/run/postgresql:5432 - accepting connections\n';
-    if (c0 === 'cat' || c0 === 'ls' || c0 === 'sh' || c0 === 'bash' || c0 === 'psql') return err(gray(S.L('这个练习只支持在容器里运行 env、curl 和 pg_isready。', 'Only env, curl and pg_isready are available inside containers in this lab.')), 126);
+    if (n.cn.fresh && (c0 === 'pg_dump' || c0 === 'pg_dumpall') && r.svc === 'postgres-splice') return pgDump(ctx, n, c0, cmd.slice(1));
+    if (c0 === 'cat' || c0 === 'ls' || c0 === 'sh' || c0 === 'bash' || c0 === 'psql') return err(gray(n.cn.fresh ? S.L('这个练习只支持在容器里运行 env、curl、pg_isready 和 pg_dump。', 'Only env, curl, pg_isready and pg_dump are available inside containers in this lab.') : S.L('这个练习只支持在容器里运行 env、curl 和 pg_isready。', 'Only env, curl and pg_isready are available inside containers in this lab.')), 126);
     return err(`OCI runtime exec failed: exec failed: unable to start container process: exec: "${c0}": executable file not found in $PATH: unknown`, 126);
+  }
+  // pg_dump inside the postgres container (fresh install): plain SQL on stdout
+  async function pgDump(ctx, n, prog, a) {
+    const w = ctx.w, cn = n.cn, dbs = ['validator', `participant-${w.chain.migrationId}`];
+    let user = null, db = null;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] === '-U' || a[i] === '--username') user = a[++i];
+      else if (a[i].startsWith('--username=')) user = a[i].slice(11);
+      else if (a[i] === '-d' || a[i] === '--dbname') db = a[++i];
+      else if (a[i] === '-f' || a[i] === '--file') return err(gray(S.L('本练习里请把输出重定向到主机上的文件：pg_dump … > /root/backups/文件名.sql', 'In this lab, redirect the output to a file on the host: pg_dump … > /root/backups/NAME.sql')), 1);
+      else if (!a[i].startsWith('-')) db = db || a[i];
+    }
+    if (user !== 'cnadmin') return err(`${prog}: error: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: FATAL:  role "${user || 'root'}" does not exist`, 1);
+    const one = d => {
+      if (!dbs.includes(d)) return null;
+      const rows = d === 'validator'
+        ? ['COPY public.store_descriptors (id, descriptor) FROM stdin;', `1\t{"version":1,"name":"ValidatorStore","party":"${cn.party || ''}","participant":"${cn.participantId || ''}"}`, '\\.']
+        : ['COPY public.common_node_id (identifier, namespace) FROM stdin;', `${(cn.participantId || '').split('::')[1] || ''}\t${cn.ns || ''}`, '\\.', 'COPY public.common_crypto_private_keys (key_id, purpose, name) FROM stdin;', `${(cn.ns || '').slice(0, 68)}\tsigning\tparticipant-namespace`, '\\.'];
+      return ['--', '-- PostgreSQL database dump', '--', '', '-- Dumped from database version 14.17 (Debian 14.17-1.pgdg120+1)', '-- Dumped by pg_dump version 14.17 (Debian 14.17-1.pgdg120+1)', '', 'SET statement_timeout = 0;', "SET client_encoding = 'UTF8';", "SELECT pg_catalog.set_config('search_path', '', false);", '', ...rows, '', '--', '-- PostgreSQL database dump complete', '--', ''].join('\n');
+    };
+    await ctx.sleep(prog === 'pg_dumpall' ? 20 : 12);
+    if (prog === 'pg_dumpall') return ['--', '-- PostgreSQL database cluster dump', '--', ''].concat(dbs.map(one)).join('\n');
+    if (!db) return err(`${prog}: error: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: FATAL:  database "cnadmin" does not exist ${gray(S.L('（要指定数据库：validator 或 participant-迁移ID）', '(name the database: validator, or participant-<migration id>)'))}`, 1);
+    const out = one(db);
+    if (out === null) return err(`${prog}: error: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: FATAL:  database "${db}" does not exist`, 1);
+    return out;
   }
   function configDrift(w, n, r) {
     if (r.project !== PROJECT) return false;
     const env = readEnv(w, n); if (!env) return false;
-    const d = desired(env, specOf(r.svc));
+    const d = desired(env, specOf(r.svc), n.cn.fresh);
     return d.image !== r.image || JSON.stringify(d.env) !== JSON.stringify(r.env);
   }
   function restartLesson(w, n, recs) {
@@ -819,7 +955,7 @@
   }
   function dVolume(ctx, args) {
     const w = ctx.w, n = ctx.host, sub = args[0], rest = args.slice(1);
-    const vols = () => (n.cn.vol ? [VOL] : []).concat(['ledger-indexer_data']);
+    const vols = () => (n.cn.vol ? [VOL] : []).concat(n.cn.fresh ? [] : ['ledger-indexer_data']);
     if (sub === 'ls') return S.table(vols().map(v => ['local', v]), ['DRIVER', 'VOLUME NAME']) + '\n';
     if (sub === 'inspect') return dInspect(ctx, rest);
     if (sub === 'rm') {
@@ -851,7 +987,7 @@
       return S.table([
         ['Images', String(imgs.length), String(imgs.filter(i => used.has(`${i.repo}:${i.tag}`)).length), fmtDockerSize(ig), `${fmtDockerSize(rec)} (${Math.round(rec / Math.max(ig, 0.001) * 100)}%)`],
         ['Containers', String(cs.length), String(cs.filter(running).length), '1.21MB', '0B (0%)'],
-        ['Local Volumes', String((n.cn.vol ? 1 : 0) + 1), String((n.cn.vol ? 1 : 0) + 1), fmtDockerSize(vg), '0B (0%)'],
+        ['Local Volumes', String((n.cn.vol ? 1 : 0) + (n.cn.fresh ? 0 : 1)), String((n.cn.vol ? 1 : 0) + (n.cn.fresh ? 0 : 1)), fmtDockerSize(vg), '0B (0%)'],
         ['Build Cache', '0', '0', '0B', '0B'],
       ], ['TYPE', 'TOTAL', 'ACTIVE', 'SIZE', 'RECLAIMABLE']) + '\n';
     }
@@ -877,7 +1013,7 @@
     txt.split('\n').forEach(l => { if (/^\s*#/.test(l)) return; const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(l); if (m) env[m[1]] = m[2].replace(/^["']|["']$/g, ''); });
     return env;
   }
-  function desired(env, spec) { return { image: spec.img(env), env: (spec.envKeys || []).reduce((o, k) => { o[k] = env[k] ?? ''; return o; }, {}) }; }
+  function desired(env, spec, fresh) { const keys = (spec.envKeys || []).concat(fresh && spec.svc === 'validator' ? FRESH_KEYS : []); return { image: spec.img(env), env: keys.reduce((o, k) => { o[k] = env[k] ?? ''; return o; }, {}) }; }
   const projectCtrs = n => SPECS.map(s => n.cn.ctrs[`${PROJECT}-${s.svc}-1`]).filter(Boolean);
   async function waitHealthy(ctx, n, rec) {
     const t0 = ctx.w.t;
@@ -894,7 +1030,7 @@
     if (!env.IMAGE_TAG || !env.IMAGE_REPO) return err(`WARN[0000] The "IMAGE_TAG" variable is not set. Defaulting to a blank string.\nError response from daemon: invalid reference format`, 1);
     let specs = SPECS.filter(s => !opts.svcs.length || opts.svcs.includes(s.svc));
     if (opts.svcs.length && opts.svcs.some(x => !specOf(x))) return err(`no such service: ${opts.svcs.find(x => !specOf(x))}`);
-    const want = specs.map(s => ({ s, d: desired(env, s) }));
+    const want = specs.map(s => ({ s, d: desired(env, s, n.cn.fresh) }));
     const missing = want.filter(x => !hasImage(n, x.d.image));
     if (missing.length) {
       ctx.write(`[+] Pulling ${missing.length}/${missing.length}\n`);
@@ -1011,7 +1147,7 @@
         const hasTail = rest.includes('--tail') || rest.includes('-n');
         const recs = sel();
         const pre = r => `${C.cyan(S.pad(r.svc + '-1', 19))}| `;
-        let es = recs.flatMap(r => { let x = n.journal['ctr:' + r.id] || []; if (hasTail) x = x.slice(-Math.max(0, parseInt(tail, 10) || 0)); return x.map(e => ({ r, e })); }).sort((a, b) => a.e.id - b.e.id);
+        let es = recs.flatMap(r => { let x = n.journal['ctr:' + r.id] || []; if (hasTail) x = x.slice(-Math.max(0, parseInt(tail, 10) || 0)); markSeen(w, n, r, x); return x.map(e => ({ r, e })); }).sort((a, b) => a.e.id - b.e.id);
         const out = es.map(x => pre(x.r) + color(x.e)).join('\n');
         if (!(flags.includes('-f') || flags.includes('--follow')) || !ctx.interactive) return out ? out + '\n' : '';
         if (out) ctx.write(out + '\n');
@@ -1149,17 +1285,19 @@
     update(el, w) {
       const L = S.L, n = Object.values(w.nodes)[0], cn = n.cn, r = netRound(w), b = behind(w, n), q = quorum(w), loc = localTag(n) || '—';
       el.querySelector('.mech-head').innerHTML = `<span class="mh-k">Global Synchronizer · round</span><span class="mh-v">${r.toLocaleString('en-US')}</span><span class="mh-s">${L('下一轮', 'next round in')} ${S.fmtDur(roundLeft(w))}${w.chain.switchAt != null ? ` · ${w.t < w.chain.switchAt ? L(`新包 ${S.fmtDur(w.chain.switchAt - w.t)} 后生效`, `new packages in ${S.fmtDur(w.chain.switchAt - w.t)}`) : L(`已切换到 ${w.chain.required} 的包`, `packages of ${w.chain.required} active`)}` : ''}</span>`;
-      const rem = cn.remainder, remCls = rem < RED_LINE ? 'badc' : '';
+      const rem = cn.remainder, remCls = rem < RED_LINE && !cn.fresh ? 'badc' : '';
       const tgt = topupTarget(bySvc(n, 'validator'));
       const vers = [...new Set(w.chain.svs.map(s => s.v))].sort(S.semverCmp);
       const dot = v => VCOL[(vers.indexOf(v) + VCOL.length) % VCOL.length];
       const svDots = w.chain.svs.map(s => `<span title="${s.name} ${s.v}" style="display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:3px;background:${dot(s.v)}"></span>`).join('');
       const legend = vers.map(v => `<span style="white-space:nowrap"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${dot(v)};margin-right:3px"></span>${v} ×${w.chain.svs.filter(s => s.v === v).length}</span>`).join(' &nbsp;');
       const verCls = S.semverCmp(loc === '—' ? '0.0.0' : loc, q) < 0 ? (versionOk(w, n) ? 'warnc' : 'badc') : S.semverCmp(loc, q) > 0 ? 'warnc' : '';
-      el.querySelector('.cn-g').innerHTML = `
-        <div class="g"><span class="k">${L('本验证者最后记录的轮次 / SV 轮次', 'last round recorded / SV round')}</span><b class="${b >= 1000 ? 'badc' : b >= 100 ? 'warnc' : b > SYNCED ? 'warnc' : ''}">${b.toLocaleString('en-US')} ${L('轮落后', b === 1 ? 'round behind' : 'rounds behind')}</b><span class="s">${cn.ourRound.toLocaleString('en-US')} / ${r.toLocaleString('en-US')} · ${synced(w, n) ? L('已同步（不超过 5 轮）', 'synced (5 rounds or less)') : L('未同步', 'not synced')} · ${L('本次错过', 'missed here')} ${cn.missed}</span><div class="bar"><i class="${b >= 100 ? 'b' : b > SYNCED ? 'w' : ''}" style="width:${Math.min(100, b / 120 * 100)}%"></i><em class="r" style="left:${100 / 120 * 100}%"></em></div></div>
+      const preOnb = cn.fresh && !cn.everReady;
+      el.querySelector('.cn-g').innerHTML = (preOnb ? `
+        <div class="g"><span class="k">${L('本验证者最后记录的轮次 / SV 轮次', 'last round recorded / SV round')}</span><b>—</b><span class="s">${L('还不是验证者：上线完成、验证者应用就绪之后才开始记录活动', 'not a validator yet: activity recording starts once onboarding completes and the validator app is ready')}</span></div>` : `
+        <div class="g"><span class="k">${L('本验证者最后记录的轮次 / SV 轮次', 'last round recorded / SV round')}</span><b class="${b >= 1000 ? 'badc' : b >= 100 ? 'warnc' : b > SYNCED ? 'warnc' : ''}">${b.toLocaleString('en-US')} ${L('轮落后', b === 1 ? 'round behind' : 'rounds behind')}</b><span class="s">${cn.ourRound.toLocaleString('en-US')} / ${r.toLocaleString('en-US')} · ${synced(w, n) ? L('已同步（不超过 5 轮）', 'synced (5 rounds or less)') : L('未同步', 'not synced')} · ${L('本次错过', 'missed here')} ${cn.missed}</span><div class="bar"><i class="${b >= 100 ? 'b' : b > SYNCED ? 'w' : ''}" style="width:${Math.min(100, b / 120 * 100)}%"></i><em class="r" style="left:${100 / 120 * 100}%"></em></div></div>`) + `
         <div class="g"><span class="k">${L('participant 处理进度落后墙上时钟', 'participant cursor behind wall clock')}</span><b class="${cn.lag > 900 ? 'badc' : cn.lag > LAG_OK ? 'warnc' : ''}">${cn.lag < 60 ? cn.lag.toFixed(1) + ' s' : S.fmtDur(cn.lag)}</b><span class="s">${cn.full ? L('磁盘已满，事件无法写入', 'disk full, events cannot be stored') : processing(n) ? (cn.lag > LAG_OK ? L(`追赶中，约 ${S.fmtDur(cn.lag / CATCHUP)} 追平`, `catching up, about ${S.fmtDur(cn.lag / CATCHUP)} to go`) : L('实时', 'live')) : L('participant 未在处理事件', 'participant not processing')}</span><div class="bar"><i class="${cn.lag > 900 ? 'b' : ''}" style="width:${Math.min(100, cn.lag / 1800 * 100)}%"></i><em class="r" style="left:50%"></em></div></div>
-        <div class="g"><span class="k">Traffic Remainder</span><b class="${remCls}">${fmtB(rem)} bytes</b><span class="s">${tgt ? L(`自动充值：开（${tgt} B/s）`, `automated top-up: on (${tgt} B/s)`) : L('自动充值：关（target-throughput = 0）', 'automated top-up: off (target-throughput = 0)')} · ${L('钱包', 'wallet')} ${cn.wallet.toFixed(1)} CC</span><div class="bar"><i class="${rem < RED_LINE ? 'b' : ''}" style="width:${Math.min(100, rem / 400000 * 100)}%"></i><em class="r" style="left:${RED_LINE / 400000 * 100}%"></em></div></div>
+        <div class="g"><span class="k">Traffic Remainder</span><b class="${remCls}">${fmtB(rem)} bytes</b><span class="s">${cn.fresh ? L(`基础额度可用 ${fmtB(cn.base)} / ${fmtB(BASE_BURST)} bytes · `, `base rate available ${fmtB(cn.base)} / ${fmtB(BASE_BURST)} bytes · `) : ''}${tgt ? L(`自动充值：开（${tgt} B/s）`, `automated top-up: on (${tgt} B/s)`) : L('自动充值：关（target-throughput = 0）', 'automated top-up: off (target-throughput = 0)')} · ${L('钱包', 'wallet')} ${cn.wallet.toFixed(1)} CC</span><div class="bar"><i class="${rem < RED_LINE ? 'b' : ''}" style="width:${Math.min(100, rem / 400000 * 100)}%"></i><em class="r" style="left:${RED_LINE / 400000 * 100}%"></em></div></div>
         <div class="g"><span class="k">${L('Splice 版本：本节点 / SV 法定多数（2/3）', 'Splice: this node / SV quorum (2/3)')}</span><b class="${verCls}">${loc} / ${q}</b><span class="s" style="line-height:1.9">${svDots}<br>${legend}</span></div>`;
       const rows = ctrList(n).slice().sort((x, y) => (x.project === PROJECT ? 0 : 1) - (y.project === PROJECT ? 0 : 1) || SPECS.findIndex(s => s.svc === x.svc) - SPECS.findIndex(s => s.svc === y.svc)).map(c => {
         const cls = !dockerUp(n) || c.state !== 'running' ? 'badc' : c.health === 'unhealthy' ? 'badc' : c.health === 'starting' ? 'warnc' : 'okc';
@@ -1171,7 +1309,7 @@
       el.querySelector('.cn-c').innerHTML = `<div class="avx-node ${bad ? 'warn' : 'ok'}"><div class="an-top"><b>${n.id}</b><span class="an-reg">docker compose · ${PROJECT}</span><span class="pill ${bad ? 'warn' : 'ok'}">${dockerUp(n) ? `${projectCtrs(n).filter(healthy).length}/${SPECS.length} healthy` : 'docker down'}</span></div>
         <div class="an-row" style="grid-template-columns:1fr auto auto">${rows}</div>
         <div class="an-row" style="grid-template-columns:auto 1fr auto auto"><span>${L('磁盘', 'disk')} /</span><span></span><b class="mono ${pct >= 99.9 ? 'badc' : pct >= 85 ? 'warnc' : ''}">${Math.round(pct)}%</b><span>${Math.round(diskUsed(n))}/${n.disk.size}G</span></div>
-        <div class="an-row" style="grid-template-columns:auto 1fr"><span>party</span><b class="mono ${cn.identityLost ? 'badc' : ''}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${cn.party.slice(0, 28)}…</b></div></div>`;
+        <div class="an-row" style="grid-template-columns:auto 1fr"><span>party</span><b class="mono ${cn.identityLost ? 'badc' : ''}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${cn.party ? cn.party.slice(0, 28) + '…' : cn.oldParty ? cn.oldParty.slice(0, 28) + '…' : L('尚未分配', 'not allocated yet')}</b></div></div>`;
     },
   };
 
@@ -1243,6 +1381,8 @@ services:
 volumes:
   postgres-splice:
 `;
+  const NGINX_CONF = 'events {}\nhttp {\n  server { listen 80; server_name wallet.localhost;\n    location /api/validator { proxy_pass http://validator:5003/api/validator; }\n    location / { proxy_pass http://wallet-web-ui:8080/; }\n  }\n  server { listen 80; server_name ans.localhost;\n    location /api/validator { proxy_pass http://validator:5003/api/validator; }\n    location / { proxy_pass http://ans-web-ui:8080/; }\n  }\n}\n';
+  const STOP_SH = '#!/bin/bash\n# Stops the validator (docker compose down).\n#   -D  also delete the database volume: ALL participant and validator data, including the node identity.\nset -euo pipefail\ncd "$(dirname "$0")"\nif [[ "${1:-}" == "-D" ]]; then docker compose down -v; else docker compose down; fi\n';
   function envFile(cfg) {
     return `# Splice validator: docker compose settings
 IMAGE_REPO=${REPO}
@@ -1284,9 +1424,9 @@ MIN_TOPUP_INTERVAL=1m
     // files
     S.fsWrite(n, COMPOSEP, COMPOSE_YAML);
     S.fsWrite(n, ENVP, envFile(cfg));
-    S.fsWrite(n, DIR + '/nginx.conf', 'events {}\nhttp {\n  server { listen 80; server_name wallet.localhost;\n    location /api/validator { proxy_pass http://validator:5003/api/validator; }\n    location / { proxy_pass http://wallet-web-ui:8080/; }\n  }\n  server { listen 80; server_name ans.localhost;\n    location /api/validator { proxy_pass http://validator:5003/api/validator; }\n    location / { proxy_pass http://ans-web-ui:8080/; }\n  }\n}\n');
+    S.fsWrite(n, DIR + '/nginx.conf', NGINX_CONF);
     S.fsWrite(n, DIR + '/start.sh', '#!/bin/bash\n# Starts the validator with the settings in .env (docker compose up -d).\nset -euo pipefail\ncd "$(dirname "$0")"\ndocker compose up -d\n', { mode: '755' });
-    S.fsWrite(n, DIR + '/stop.sh', '#!/bin/bash\n# Stops the validator (docker compose down).\n#   -D  also delete the database volume: ALL participant and validator data, including the node identity.\nset -euo pipefail\ncd "$(dirname "$0")"\nif [[ "${1:-}" == "-D" ]]; then docker compose down -v; else docker compose down; fi\n', { mode: '755' });
+    S.fsWrite(n, DIR + '/stop.sh', STOP_SH, { mode: '755' });
     S.fsWrite(n, '/root/operator.jwt', TOKEN + '\n', { mode: '600', owner: 'root' });
     S.fsWrite(n, DAEMON, cfg.daemonJson ?? '{\n  "log-driver": "json-file",\n  "log-opts": { "max-size": "100m", "max-file": "3" }\n}\n');
     try { cn.daemon = JSON.parse(S.fsRead(w, n, DAEMON)); } catch (e) { cn.daemon = {}; }
@@ -1352,6 +1492,79 @@ MIN_TOPUP_INTERVAL=1m
     return n;
   }
 
+  /* ---------- fresh install (cfg.fresh): an empty Ubuntu host and a release bundle ---------- */
+  const sha256 = c => hex(hstr(String(c)), 64);
+  const BUNDLE_COMPOSE = () => COMPOSE_YAML.replace('      - PARTY_HINT=\${PARTY_HINT}\n', '      - PARTY_HINT=\${PARTY_HINT}\n      - ONBOARDING_SECRET=\${ONBOARDING_SECRET}\n');
+  const bundleEnv = tag => `# Splice validator: docker compose settings (release bundle ${tag})
+IMAGE_REPO=${REPO}
+IMAGE_TAG=${tag}
+POSTGRES_VERSION=14
+
+# Synchronizer migration id, as published by the SVs
+MIGRATION_ID=
+# Validator party hint: <organization>-<function>-<enumerator>
+PARTY_HINT=
+# Sponsoring SV, and the scan to read network data from
+SPONSOR_SV_ADDRESS=
+SCAN_ADDRESS=
+# One-time secret issued by the sponsoring SV
+ONBOARDING_SECRET=
+
+# Automated traffic top-ups: bytes per second of throughput to buy traffic for.
+# 0 disables automated top-ups.
+TARGET_TRAFFIC_THROUGHPUT=0
+MIN_TOPUP_INTERVAL=1m
+`;
+  function bundle(tag) {
+    const V = 'splice-node/docker-compose/validator/';
+    return 'TARBALL:' + JSON.stringify({ files: {
+      [V + 'compose.yaml']: { c: BUNDLE_COMPOSE(), mode: '644' },
+      [V + '.env']: { c: bundleEnv(tag), mode: '644' },
+      [V + 'nginx.conf']: { c: NGINX_CONF, mode: '644' },
+      [V + 'start.sh']: { c: '#!/bin/bash\n# Starts the validator with the settings in .env (docker compose up -d).\nset -euo pipefail\ncd "$(dirname "$0")"\ndocker compose up -d\n', mode: '755' },
+      [V + 'stop.sh']: { c: STOP_SH, mode: '755' },
+    } });
+  }
+  function sha256sum(ctx) {
+    const files = ctx.args.filter(a => !a.startsWith('-'));
+    if (!files.length) return err('sha256sum: reading from standard input is not supported in this lab; name a file');
+    let out = '', code = 0;
+    files.forEach(f => {
+      const c = S.fsRead(ctx.w, ctx.host, ctx.resolve(f));
+      if (c === null) { out += `sha256sum: ${f}: No such file or directory\n`; code = 1; return; }
+      out += `${sha256(c)}  ${f}\n`;
+      const tag = ctx.w.chain.released.find(t => bundle(t) === c);
+      if (tag && ctx.host.cn) ctx.host.cn.seen.sha = tag;
+    });
+    return { code, out };
+  }
+  function makeFreshNode(w, cfg) {
+    const n = S.makeHost({
+      id: 'canton-new', moniker: 'canton-new', hostname: 'canton-new', instanceId: 'i-0f3b8d27a91c4e605', region: 'us-east-1', ip: '203.0.113.87', kind: 'node', homeUser: 'ubuntu',
+      mem: { total: 64 * 1024, used: 2 * 1024 }, disk: { size: 500, dev: '/dev/nvme0n1p1' }, cpus: 16, load: [0.08, 0.05, 0.02], upBase: 3600, bootAt: 0,
+    });
+    Object.defineProperty(n.disk, 'used', { get: () => Math.min(n.disk.size, Math.round(diskUsed(n))), enumerable: true });
+    const r0 = netRound(w);
+    n.cn = {
+      fresh: true, seen: {}, ctrs: {}, logs: {}, images: [], vol: null, osGB: 6.2, auxGB: 0, dbVersion: '0.0.0', party: null, participantId: null, ns: null, onboarded: false, everReady: false, identityLost: false, pgCorrupt: false,
+      lag: 1.5, ourRound: r0 - 1, lastRound: r0, missed: 0, recorded: 0, firstRound: null, remainder: 0, purchased: 0, wallet: 0, spent: 0, consume: 15, base: BASE_BURST,
+      pending: [], requests: {}, nextTopup: 0, nextTopupNote: 0, nextFundNote: 0, nextTrafficErr: 0, nextPkgErr: 0, nextFullLog: 0, nextPanic: 0, nextCatchLog: 0, vDown: 0, minRem: Infinity,
+      daemon: {}, watch: { last: 0, next: Infinity, needed: 0, health: 1, quorum: null, local: null }, watchLog: [], seq0: 81234567,
+    };
+    n.cn.quorumAtStart = quorum(w);
+    n.services.docker = { name: 'docker', desc: 'Docker Application Container Engine', unitPath: '/usr/lib/systemd/system/docker.service', state: 'active', since: -3600, pid: 1187, exec: '/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock', memStr: () => '84.1M', tasks: 11 };
+    n.services.containerd = { name: 'containerd', desc: 'containerd container runtime', unitPath: '/usr/lib/systemd/system/containerd.service', state: 'active', since: -3600, pid: 1102, exec: '/usr/bin/containerd' };
+    n.services['amazon-ssm-agent'] = { name: 'amazon-ssm-agent', desc: 'amazon-ssm-agent', unitPath: '/etc/systemd/system/amazon-ssm-agent.service', state: 'active', since: -3600, pid: 812, exec: '/usr/bin/amazon-ssm-agent' };
+    n.commands = { sha256sum };
+    ['/opt', '/var/lib/docker/overlay2', '/var/lib/docker/image', '/var/lib/docker/volumes', '/usr', '/snap', '/boot', '/var/cache', '/var/log', '/home/ubuntu', '/home/ssm-user', '/tmp', '/root', '/etc'].forEach(d => n.dirs.add(d));
+    S.fsWrite(n, '/dev/null', '');
+    S.fsWrite(n, '/etc/os-release', 'PRETTY_NAME="Ubuntu 24.04.1 LTS"\nNAME="Ubuntu"\nVERSION_ID="24.04"\n');
+    S.log(w, n, 'docker', 'INFO', 'level=info msg="API listen on /run/docker.sock"');
+    n.procs = () => dockerUp(n) ? [{ user: 'root', pid: 1187, cpu: '0.3', mem: '0.1', cmd: '/usr/bin/dockerd -H fd://' }].concat(ctrList(n).filter(running).filter(r => r.spec.splice || r.svc === 'postgres-splice').map(r => ({ user: r.svc === 'postgres-splice' ? '999' : 'root', pid: 3000 + parseInt(r.id.slice(0, 3), 16), cpu: r.svc === 'participant' ? '31.2' : r.svc === 'validator' ? '18.9' : '1.4', mem: r.svc === 'participant' ? '7.9' : r.svc === 'validator' ? '5.2' : '1.1', cmd: r.svc === 'postgres-splice' ? 'postgres' : r.svc === 'participant' ? 'java -jar /app/canton.jar daemon --config /app/participant.conf' : r.svc === 'validator' ? 'java -jar /app/splice-node.jar --config /app/validator.conf' : 'nginx: master process' }))) : [];
+    n.listening = () => dockerUp(n) && running(n.cn.ctrs[`${PROJECT}-nginx-1`]) ? [{ addr: '0.0.0.0:80', proc: 'docker-proxy', pid: 2210 }] : [];
+    return n;
+  }
+
   const LOGO = '<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="16" fill="#0f7f86"/><text x="16" y="20.5" text-anchor="middle" font-family="ui-sans-serif,system-ui,sans-serif" font-size="13" font-weight="700" fill="#fff">C</text></svg>';
 
   S.registerNetwork({
@@ -1365,6 +1578,16 @@ MIN_TOPUP_INTERVAL=1m
         switchAt: cfg.switchAt ?? null, required: cfg.required || null,
         released: cfg.released || ['0.8.0', '0.8.1', '0.8.2'], latest: cfg.latest || (cfg.released ? cfg.released[cfg.released.length - 1] : '0.8.2'),
       };
+      if (cfg.fresh) {
+        const ch = w.chain; ch.fresh = true;
+        const old = hex(707, 40);
+        ch.secrets = { [old]: { sv: 'sv-3', node: 'canton-01', usedBy: PARTICIPANT, usedByParty: PARTY, at: -86400 * 160 } };
+        w.nodes['canton-new'] = makeFreshNode(w, cfg);
+        S.fsWrite(w.laptop, '/home/ops/NOTES.md', S.L(
+          `# canton-new（新的 Splice 验证者，MainNet）\n- 登录：ssm canton-new，然后 sudo -i\n- 主机：Ubuntu 24.04，已装好 docker 和 compose 插件，别的都还没有\n- 担保 SV：sv-3。上线接口 https://sv.sv-3.example，scan https://scan.sv-3.example\n- sv-3 已把这台主机的出口 IP 203.0.113.87 加进白名单\n- party hint：acme-validator-1（格式 <组织>-<用途>-<序号>）\n- Splice 发布：https://github.com/canton-network/splice/releases\n\n# canton-01（已在运行的验证者）\n- 上线时 sv-3 给的密钥：${old}\n`,
+          `# canton-new (new Splice validator, MainNet)\n- log in: ssm canton-new, then sudo -i\n- host: Ubuntu 24.04 with docker and the compose plugin installed, nothing else yet\n- sponsoring SV: sv-3. Onboarding endpoint https://sv.sv-3.example, scan https://scan.sv-3.example\n- sv-3 has allowlisted this host's egress IP 203.0.113.87\n- party hint: acme-validator-1 (format <organization>-<function>-<enumerator>)\n- Splice releases: https://github.com/canton-network/splice/releases\n\n# canton-01 (the validator already running)\n- onboarding secret sv-3 issued for it: ${old}\n`));
+        return;
+      }
       w.nodes['canton-01'] = makeNode(w, cfg);
       S.fsWrite(w.laptop, '/home/ops/NOTES.md', S.L(
         `# canton-01（Splice 验证者，MainNet）\n- 登录：ssm canton-01，然后 sudo -i\n- compose 目录：${DIR}\n- 验证者 party：用 wallet API 的 /v0/validator-user 查询\n- participant：${PARTICIPANT}\n- synchronizer：${DOMAIN}\n- 上线担保 SV：sv-3，party ${SPONSOR}\n- 合作方验证者（上月用本钱包代付过 traffic）：${PARTNER}\n- wallet API：节点上的 http://wallet.localhost/api/validator，token 在 /root/operator.jwt\n- 同步状态：curl -s 127.0.0.1:8100/api/sync（scan-proxy）· curl -s 127.0.0.1:8090/status（ledger-indexer）\n- 版本监视：/var/log/splice-version-watcher.log\n`,
@@ -1408,7 +1631,16 @@ MIN_TOPUP_INTERVAL=1m
       });
     },
     helpers: {
-      DOMAIN, PARTY, SPONSOR, PARTNER, PARTICIPANT, DIR, RED_LINE,
+      DOMAIN, PARTY, SPONSOR, PARTNER, PARTICIPANT, DIR, RED_LINE, BASE_BURST,
+      // fresh install (the guided lab)
+      fresh: {
+        node: w => Object.values(w.nodes)[0],
+        env: w => readEnv(w, Object.values(w.nodes)[0]),
+        bundle, sha256, readEnv, bySvc, healthy, running, topupTarget, projectCtrs, netRound, quorum, synced,
+        haveBundle: (w, tag) => Object.values(Object.values(w.nodes)[0].fs).some(f => f.c === bundle(tag)),
+        allUp: w => { const n = Object.values(w.nodes)[0]; return dockerUp(n) && projectCtrs(n).length === SPECS.length && projectCtrs(n).every(running); },
+        allHealthy: w => { const n = Object.values(w.nodes)[0]; return dockerUp(n) && projectCtrs(n).length === SPECS.length && projectCtrs(n).every(healthy); },
+      },
       node: w => w.nodes['canton-01'],
       round: netRound, behind, synced, quorum, versionOk, diskPct, localTag,
       remainder: w => w.nodes['canton-01'].cn.remainder,

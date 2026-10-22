@@ -155,29 +155,29 @@ module.exports = [
     expect: r => r.viol && r.viol.forfeit !== undefined ? [] : ['forfeit not flagged'],
   },
   {
-    name: 'run', // R1: follow every step of the guided lab, using the commands from each step's "how"
+    name: 'run', // R1: follow every step of the guided lab, using each step's cmds
     scenario: 'avax-run',
     steps: `(async () => {
     const o = [];
-    const hows = VSIM.S.scenarios.find(s => s.id === 'avax-run').steps.map(st => { const d = document.createElement('div'); d.innerHTML = VSIM.S.tr(st.how); return [...d.querySelectorAll('code')].map(c => c.textContent); });
+    const hows = VSIM.S.scenarios.find(s => s.id === 'avax-run').steps.map(st => st.cmds || []);
     const H = VSIM.S.networks.avalanche.helpers, n = () => VSIM.w.nodes['avax-new'];
     for (let i = 0; i < hows.length; i++) {
       if (i === 5) { for (let k = 0; k < 40 && !H.bootDone(n()); k++) await T.adv(600, 60); }
-      for (const cmd of hows[i]) { if (/journalctl .*-f$/.test(cmd)) { o.push(await T.cmd('journalctl -u avalanchego -n 8 --no-pager')); continue; } o.push('$ ' + cmd + '\\n' + await T.cmd(cmd)); }
+      for (const cmd of hows[i]) o.push('$ ' + cmd + '\\n' + await T.cmd(cmd));
       await T.adv(30);
       o.push('-- after step ' + (i + 1) + ': stepIdx=' + VSIM.w.stepIdx);
     }
     await T.adv(60);
     return { out: o.join('\\n'), done: VSIM.w.done, result: VSIM.w.result, stepIdx: VSIM.w.stepIdx, viol: VSIM.w.violations, events: VSIM.w.events.map(e => VSIM.S.tr(e.html).replace(/<[^>]+>/g,'')).slice(-6) };
   })()`,
-    expect: r => [...(r.result && r.result.success ? [] : ['lab not completed (stepIdx ' + r.stepIdx + ')']), ...(/command not found|syntax error|internal simulator error/.test(r.out || '') ? ['a command in a step\'s how did not run'] : [])],
+    expect: r => [...(r.result && r.result.success ? [] : ['lab not completed (stepIdx ' + r.stepIdx + ')']), ...(/command not found|syntax error|internal simulator error/.test(r.out || '') ? ['a command in a step\'s cmds did not run'] : [])],
   },
   {
     name: 'runApiTrap', // R1 trap: http-host 0.0.0.0 with 9650 open in ufw
     scenario: 'avax-run',
     steps: `(async () => {
     const o = [];
-    const hows = VSIM.S.scenarios.find(s => s.id === 'avax-run').steps.map(st => { const d = document.createElement('div'); d.innerHTML = VSIM.S.tr(st.how); return [...d.querySelectorAll('code')].map(c => c.textContent); });
+    const hows = VSIM.S.scenarios.find(s => s.id === 'avax-run').steps.map(st => st.cmds || []);
     for (const i of [0, 1, 2, 3, 4]) for (let cmd of hows[i]) { if (i === 3 && cmd.startsWith('echo')) cmd = cmd.replace('127.0.0.1', '0.0.0.0'); o.push('$ ' + cmd + '\\n' + await T.cmd(cmd)); }
     o.push(await T.cmd('ufw allow 9650/tcp'));
     o.push(await T.cmd('ss -tlnp'));
@@ -193,7 +193,7 @@ module.exports = [
     scenario: 'avax-run',
     steps: `(async () => {
     const o = [];
-    const hows = VSIM.S.scenarios.find(s => s.id === 'avax-run').steps.map(st => { const d = document.createElement('div'); d.innerHTML = VSIM.S.tr(st.how); return [...d.querySelectorAll('code')].map(c => c.textContent); });
+    const hows = VSIM.S.scenarios.find(s => s.id === 'avax-run').steps.map(st => st.cmds || []);
     for (const i of [0, 1, 2, 3, 4]) for (const cmd of hows[i]) o.push('$ ' + cmd + '\\n' + await T.cmd(cmd));
     o.push(await T.cmd(hows[5][1]));
     o.push(await T.cmd('exit')); o.push(await T.cmd('exit'));

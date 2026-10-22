@@ -496,7 +496,7 @@ downtime still left = 10% × period length − downtime so far</pre>
     jq: 'jq . /etc/avalanche/config.json',
     unit: `printf '${UNIT.join('\\n')}' > /etc/systemd/system/avalanchego.service`,
     reload: 'systemctl daemon-reload', enable: 'systemctl enable avalanchego', start: 'systemctl start avalanchego', status: 'systemctl status avalanchego',
-    follow: 'journalctl -u avalanchego -f',
+    journal: 'journalctl -u avalanchego -n 20 --no-pager',
     bootP: `${RPC('info.isBootstrapped', { chain: 'P' })} 127.0.0.1:9650/ext/info`,
     bootX: `${RPC('info.isBootstrapped', { chain: 'X' })} 127.0.0.1:9650/ext/info`,
     bootC: `${RPC('info.isBootstrapped', { chain: 'C' })} 127.0.0.1:9650/ext/info`,
@@ -511,7 +511,7 @@ downtime still left = 10% × period length − downtime so far</pre>
     pchain: `${RPC('platform.getCurrentValidators', { nodeIDs: [NEW.nodeID] })} https://api.avax.network/ext/bc/P | jq '.result.validators[0] | {nodeID, startTime, endTime, uptime, connected, delegationFee}'`,
     nc: `nc -zv ${NEW.ip} 9651`, nc50: `nc -zv ${NEW.ip} 9650`,
   };
-  const c = k => `<code>${S.esc(CMD[k])}</code>`;
+  const cmds = (...ks) => ks.map(k => CMD[k]);
   // one paragraph per step: the goals box lays out each child of .how as a grid cell
   const HOW = (zh, en) => LL(`<p>${zh}</p>`, `<p>${en}</p>`);
   const node = w => w.nodes['avax-new'];
@@ -580,67 +580,78 @@ downtime still left = 10% × period length − downtime so far</pre>
     steps: [
       {
         text: LL('登录 avax-new 并切换到 root', 'Log in to avax-new and become root'),
-        how: HOW(`在工作电脑上执行 ${c('ssm')}，然后 ${c('root')}。`, `From the workstation run ${c('ssm')}, then ${c('root')}.`),
+        how: HOW('从工作电脑通过 SSM 登录新主机，再切换到 root。后面的步骤都需要 root 权限。', 'Open an SSM session to the new host from the workstation, then become root. Every later step needs root.'),
+        cmds: cmds('ssm', 'root'),
         after: LL('SSM 会话不需要开放 22 端口。<code>sudo -i</code> 之后 <code>~</code> 是 <code>/root</code>；节点的数据目录在服务用户的家目录下，所以后面一律写绝对路径。', 'An SSM session needs no open port 22. After <code>sudo -i</code>, <code>~</code> is <code>/root</code>; the node\'s data lives in the service user\'s home, so later steps use absolute paths.'),
         check: w => (node(w).sessions || 0) > 0,
       },
       {
         text: LL('检查主机，并在防火墙上放行 9651/tcp', 'Check the host and allow 9651/tcp through the firewall'),
-        how: HOW(`看磁盘、CPU、内存和文件描述符上限：${c('df')}、${c('nproc')}、${c('free')}、${c('ulimit')}。查看防火墙 ${c('ufwS')}，然后放行 staking 端口 ${c('ufw')}。不要放行 9650。`, `Check disk, CPUs, memory and the file-descriptor limit: ${c('df')}, ${c('nproc')}, ${c('free')}, ${c('ulimit')}. Look at the firewall with ${c('ufwS')}, then open the staking port with ${c('ufw')}. Do not open 9650.`),
+        how: HOW('先确认磁盘、CPU、内存和文件描述符上限够用，再看防火墙规则，只放行 staking 端口 9651。不要放行 9650。', 'Check that the disk, CPUs, memory and file-descriptor limit are enough. Then look at the firewall rules and open only the staking port, 9651. Do not open 9650.'),
+        cmds: cmds('df', 'nproc', 'free', 'ulimit', 'ufwS', 'ufw'),
         after: LL('9651 是与其他验证者之间的全部连接，必须能从外部连入；9650 只给本机用（基础课《端口与可达性》）。shell 里的 <code>ulimit -n</code> 是 1024，服务的上限由 systemd 单元里的 <code>LimitNOFILE</code> 决定，下一步会写进去。', '9651 carries every connection to other validators and must be reachable from outside; 9650 is for the host only (Fundamentals: Ports and reachability). The shell\'s <code>ulimit -n</code> is 1024; the service\'s limit comes from <code>LimitNOFILE</code> in the systemd unit, written in a later step.'),
         check: w => node(w).ufw.active && A().fwAllows(node(w), 9651),
       },
       {
         text: LL('下载 avalanchego v1.15.0，校验签名后安装', 'Download avalanchego v1.15.0, verify its signature, and install it'),
-        how: HOW(`${c('cd')}，下载发布包和签名：${c('dl')}、${c('dlSig')}。<br>导入 Ava Labs 的发布公钥 ${c('key')}，校验 ${c('verify')}。<br>看到 <span class="mono">Good signature</span> 后解压并安装：${c('untar')}、${c('install')}，最后 ${c('ver')}。`, `${c('cd')}, then fetch the release and its signature: ${c('dl')}, ${c('dlSig')}.<br>Import the Ava Labs release key with ${c('key')} and verify with ${c('verify')}.<br>Once it says <span class="mono">Good signature</span>, unpack and install: ${c('untar')}, ${c('install')}, then ${c('ver')}.`),
+        how: HOW('在 /tmp 下载发布包和它的签名，导入 Ava Labs 的发布公钥并校验。只有看到 <span class="mono">Good signature</span> 才解压，把二进制安装到 /usr/local/bin，再确认版本。', 'Download the release and its signature into /tmp, import the Ava Labs release key and verify. Unpack only after <span class="mono">Good signature</span>, install the binary to /usr/local/bin, and confirm the version.'),
+        cmds: cmds('cd', 'dl', 'dlSig', 'key', 'verify', 'untar', 'install', 'ver'),
         after: LL('签名证明这个压缩包就是 Ava Labs 发布的那一份。公钥的指纹应与官方公布的一致（<code>5395 BDA1 … C0D5 FE8B</code>）。Helicon 激活之后，低于 1.15.0 的节点会被网络断开（基础课《网络升级》）。', 'The signature proves the tarball is the one Ava Labs released. Check the key\'s fingerprint against the published one (<code>5395 BDA1 … C0D5 FE8B</code>). Since Helicon activated, nodes below 1.15.0 are disconnected by the network (Fundamentals: Network upgrades).'),
         check: w => { const v = fresh(w).verified, b = A().binVer(S.fsRead(w, node(w), '/usr/local/bin/avalanchego')); return !!v && b === v && S.semverCmp(b, A().MIN) >= 0; },
       },
       {
         text: LL('创建服务用户 avalanche，写好 /etc/avalanche/config.json', 'Create the avalanche service user and write /etc/avalanche/config.json'),
-        how: HOW(`${c('useradd')}，确认 ${c('id')}。查本机公网 IP ${c('ip')}。然后 ${c('mkdir')}，写入配置 ${c('config')}，用 ${c('jq')} 检查 JSON 是否有效。`, `${c('useradd')}, and confirm with ${c('id')}. Look up the public IP with ${c('ip')}. Then ${c('mkdir')}, write the config with ${c('config')}, and check the JSON with ${c('jq')}.`),
+        how: HOW(`创建一个不能登录的系统用户来运行节点。查出本机的公网 IP，写进配置的 <code>public-ip</code>；<code>http-host</code> 设为 <code>127.0.0.1</code>。最后用 jq 确认 JSON 有效。`, `Create a system user that cannot log in to run the node. Look up the host's public IP and write it as <code>public-ip</code> in the config, with <code>http-host</code> on <code>127.0.0.1</code>. Then check with jq that the JSON is valid.`),
+        cmds: cmds('useradd', 'id', 'ip', 'mkdir', 'config', 'jq'),
         after: LL('<code>public-ip</code> 是告诉对等节点"拨这个地址找我"；写错了，别人就连不进来。<code>http-host</code> 设为 <code>127.0.0.1</code>，API 只在本机可用。节点以无登录权限的 <code>avalanche</code> 用户运行，数据和密钥放在 <code>/home/avalanche/.avalanchego</code>。', '<code>public-ip</code> tells peers which address to dial; if it is wrong, nobody can connect in. <code>http-host</code> at <code>127.0.0.1</code> keeps the API on the host. The node runs as the <code>avalanche</code> user, which cannot log in, and keeps its data and keys in <code>/home/avalanche/.avalanchego</code>.'),
         check: w => { const n = node(w), u = A().users(n).avalanche, cf = A().cfg(w, n); return !!u && S.fsIsDir(n, u.home) && !!cf && cf['public-ip'] === n.ip && A().loopback(cf['http-host'] ?? '127.0.0.1') && (cf['network-id'] ?? 'mainnet') === 'mainnet'; },
       },
       {
         text: LL('写好 systemd 单元，设为开机启动并启动节点', 'Write the systemd unit, enable it and start the node'),
-        how: HOW(`写入单元文件 ${c('unit')}（以 <span class="mono">avalanche</span> 用户运行、失败后自动重启、<span class="mono">LimitNOFILE=32768</span>）。然后 ${c('reload')}、${c('enable')}、${c('start')}，用 ${c('status')} 确认 <span class="mono">active (running)</span>。`, `Write the unit file with ${c('unit')} (runs as <span class="mono">avalanche</span>, restarts on failure, <span class="mono">LimitNOFILE=32768</span>). Then ${c('reload')}, ${c('enable')}, ${c('start')}, and confirm <span class="mono">active (running)</span> with ${c('status')}.`),
+        how: HOW('写入单元文件：以 <span class="mono">avalanche</span> 用户运行，失败后自动重启，<span class="mono">LimitNOFILE=32768</span>。让 systemd 重新读取单元，设为开机启动，启动服务，确认状态是 <span class="mono">active (running)</span>。', 'Write the unit file: it runs as <span class="mono">avalanche</span>, restarts on failure, and sets <span class="mono">LimitNOFILE=32768</span>. Have systemd reload its units, enable the service, start it, and confirm it is <span class="mono">active (running)</span>.'),
+        cmds: cmds('unit', 'reload', 'enable', 'start', 'status'),
         after: LL('第一次启动时，avalanchego 在 <code>/home/avalanche/.avalanchego/staking/</code> 生成 <code>staker.crt</code>、<code>staker.key</code> 和 <code>signer.key</code>，这就是这台验证者的身份（基础课《成为验证者》）。', 'On first start avalanchego creates <code>staker.crt</code>, <code>staker.key</code> and <code>signer.key</code> in <code>/home/avalanche/.avalanchego/staking/</code>. They are this validator\'s identity (Fundamentals: Becoming a validator).'),
         check: w => { const n = node(w), u = A().unitOf(w, n), s = n.services.avalanchego; return !!u && u.user === 'avalanche' && u.exec.includes('/usr/local/bin/avalanchego') && u.exec.includes('--config-file=/etc/avalanche/config.json') && !!s && s.enabled === true && A().active(n); },
       },
       {
         text: LL('等待 P、X、C 三条链完成引导，节点变为健康', 'Wait until P, X and C have bootstrapped and the node is healthy'),
-        how: HOW(`把速度调到 600× 或 3600×。跟踪日志 ${c('follow')}（Ctrl+C 退出）。分别查询三条链：${c('bootP')}、${c('bootX')}、${c('bootC')}。全部为 true 后检查 ${c('health')}。`, `Set the speed to 600× or 3600×. Follow the log with ${c('follow')} (Ctrl+C to stop). Ask each chain: ${c('bootP')}, ${c('bootX')}, ${c('bootC')}. When all three are true, check ${c('health')}.`),
+        how: HOW('日志显示每条链的同步进度。同步结束前，三条链的查询都返回 false，health 也是 false。把速度调到 600× 或 3600×，等时钟走完后再查一次，直到全部为 true。', 'The log shows each chain\'s sync progress. Until the sync finishes, all three chains answer false and health is false. Set the speed to 600× or 3600×, let the clock run, then ask again until everything is true.'),
+        cmds: cmds('journal', 'bootP', 'bootX', 'bootC', 'health'), wait: 12000,
         after: LL('P-Chain 先完成，X-Chain 和 C-Chain 随后并行；C-Chain 用状态同步，而不是执行全部历史。主网上第一次同步需要数小时，本练习做了压缩（基础课《引导同步与数据库》）。', 'The P-Chain finishes first, then X and C in parallel; the C-Chain uses state sync instead of executing all history. A first mainnet sync takes hours; this lab compresses it (Fundamentals: Bootstrapping and the database).'),
         check: w => A().bootDone(node(w)) && A().healthy(w, node(w)),
       },
       {
         text: LL('读取 NodeID 和 BLS 公钥及所有权证明', 'Read the NodeID, the BLS public key and its proof of possession'),
-        how: HOW(`${c('nodeid')}。记下 <span class="mono">nodeID</span>、<span class="mono">nodePOP.publicKey</span> 和 <span class="mono">nodePOP.proofOfPossession</span>，注册时要用。`, `${c('nodeid')}. Note <span class="mono">nodeID</span>, <span class="mono">nodePOP.publicKey</span> and <span class="mono">nodePOP.proofOfPossession</span>; registration needs all three.`),
+        how: HOW('向本机的 info API 查询节点身份。记下 <span class="mono">nodeID</span>、<span class="mono">nodePOP.publicKey</span> 和 <span class="mono">nodePOP.proofOfPossession</span>，注册时三个都要用。', 'Ask the local info API for the node\'s identity. Note <span class="mono">nodeID</span>, <span class="mono">nodePOP.publicKey</span> and <span class="mono">nodePOP.proofOfPossession</span>; registration needs all three.'),
+        cmds: cmds('nodeid'),
         after: LL('NodeID 来自 <code>staker.crt</code>；BLS 公钥和所有权证明来自 <code>signer.key</code>。这三个值都公开，可以复制到钱包所在的机器上；私钥永远留在节点上。', 'The NodeID comes from <code>staker.crt</code>; the BLS public key and proof of possession come from <code>signer.key</code>. All three values are public and can be copied to the wallet machine; the secret keys stay on the node.'),
         check: w => fresh(w).idAt != null,
       },
       {
         text: LL('把 staking 文件备份到主机以外，并确认备份完整', 'Back up the staking files off the host and confirm the backup'),
-        how: HOW(`${c('lsKeys')}，然后上传到加密的备份桶 ${c('backup')}，再列出确认三个文件都在 ${c('lsBackup')}。`, `${c('lsKeys')}, then upload them to the encrypted backup bucket with ${c('backup')}, and list it to confirm all three files are there: ${c('lsBackup')}.`),
+        how: HOW('列出 staking 目录里的三个文件，上传到加密的备份桶，再列出备份，确认三个文件都在。', 'List the three files in the staking directory, upload them to the encrypted backup bucket, then list the backup to confirm all three are there.'),
+        cmds: cmds('lsKeys', 'backup', 'lsBackup'),
         after: LL('这三个文件就是验证者。主机损坏时，用同一份文件在新主机上恢复，NodeID 和 BLS 公钥都保持不变。要在注册之前完成备份。', 'These three files are the validator. If the host is lost, the same files restore it on a new host with the same NodeID and BLS key. Do this before registering.'),
         check: w => A().backupOk(w, node(w)) && fresh(w).listedAt != null,
       },
       {
         text: LL('在工作电脑上用钱包注册验证者', 'Register the validator from the wallet on the workstation'),
-        how: HOW(`回到工作电脑：${c('exit')}、${c('exit')}。查看钱包 ${c('keys')}。提交注册（质押 2,000 AVAX、期限 336 小时、委托费率 2%）：${c('register')}。<br>真实环境中这一步通常在钱包里完成（例如 Core 钱包的 Stake → Validate），这里用一个命令行钱包来模拟。`, `Back to the workstation: ${c('exit')}, ${c('exit')}. Check the wallet with ${c('keys')}. Submit the registration (2,000 AVAX, 336 hours, 2% delegation fee): ${c('register')}.<br>In practice this is usually done in a wallet (for example Stake → Validate in Core); a command-line wallet stands in for it here.`),
+        how: HOW('退出 root 和会话，回到工作电脑。确认钱包里有足够的余额，然后提交注册：质押 2,000 AVAX，期限 336 小时，委托费率 2%。<br>真实环境中这一步通常在钱包里完成（例如 Core 钱包的 Stake → Validate），这里用一个命令行钱包来模拟。', 'Leave root and the session to get back to the workstation. Check that the wallet holds enough, then submit the registration: 2,000 AVAX, 336 hours, 2% delegation fee.<br>In practice this is usually done in a wallet (for example Stake → Validate in Core); a command-line wallet stands in for it here.'),
+        cmds: cmds('exit', 'exit', 'keys', 'register'),
         after: LL('交易被接受的那一刻，质押期就开始了，参数从此不能修改（基础课《成为验证者》）。资金和签名钥匙都在钱包这边，节点上只有它自己的身份文件。', 'The period starts the moment the transaction is accepted, and its parameters can no longer change (Fundamentals: Becoming a validator). The funds and the signing key stay with the wallet; the node holds only its own identity files.'),
         check: w => node(w).av.validator,
       },
       {
         text: LL('从独立视角确认它已在验证者集合中，并且 connected', 'Confirm from an independent view that it is in the validator set and connected'),
-        how: HOW(`向 api.avax.network 查询：${c('pchain')}。期望看到 <span class="mono">connected: true</span>，<span class="mono">uptime</span> 接近 100。过几分钟再查一次。`, `Ask api.avax.network: ${c('pchain')}. Expect <span class="mono">connected: true</span> and an <span class="mono">uptime</span> close to 100. Ask again a few minutes later.`),
+        how: HOW('向 api.avax.network 查询这台验证者的 P-Chain 记录。期望看到 <span class="mono">connected: true</span>，<span class="mono">uptime</span> 接近 100。过几分钟再查一次。', 'Ask api.avax.network for this validator\'s P-Chain record. Expect <span class="mono">connected: true</span> and an <span class="mono">uptime</span> close to 100. Ask again a few minutes later.'),
+        cmds: cmds('pchain'),
         after: LL('奖励依据的是其他验证者看到的在线率，节点无法自证（基础课《在线率与奖励》）。从现在起每离线一小时，14 天的质押期就少约 0.3 个百分点。', 'The reward depends on the uptime other validators see; a node cannot vouch for itself (Fundamentals: Uptime and rewards). From now on, each hour offline costs about 0.3 percentage points of a 14-day period.'),
         check: w => { const f = fresh(w); return f.seenAt != null && f.seenAt >= f.valStart && A().connected(w, node(w)); },
       },
       {
         text: LL('确认外部可达性和节点健康', 'Confirm reachability from outside and node health'),
-        how: HOW(`在工作电脑上：${c('nc')} 应当成功，${c('nc50')} 应当超时。再登录节点 ${c('ssm')}、${c('root')}，检查 ${c('health')}。`, `From the workstation, ${c('nc')} should succeed and ${c('nc50')} should time out. Then log in with ${c('ssm')}, ${c('root')}, and check ${c('health')}.`),
+        how: HOW('从工作电脑测试两个端口：9651 应当连通，9650 应当超时。再登录节点，确认 health 为 true。', 'Test both ports from the workstation: 9651 should connect and 9650 should time out. Then log in to the node and confirm health is true.'),
+        cmds: cmds('nc', 'nc50', 'ssm', 'root', 'health'),
         after: LL('节点进入验证者集合之后，<code>network</code> 健康检查也会核对是否有入站连接。9651 能连通、9650 连不通，这正是期望的状态。', 'Now that the node is a validator, the <code>network</code> health check also requires inbound connections. 9651 reachable and 9650 not is exactly the intended state.'),
         check: w => { const f = fresh(w); return f.ncAt != null && f.healthAt != null && f.healthAt >= f.valStart && A().healthy(w, node(w)); },
       },

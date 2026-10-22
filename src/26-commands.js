@@ -61,18 +61,37 @@
     out += C.gray(h.kind === 'laptop' ? S.L('登录节点：ssm <节点名>，或 aws ssm start-session --region <区域> --target <实例 ID>。\n', 'Log in to a node: ssm <node>, or aws ssm start-session --region <region> --target <instance-id>.\n') : S.L('回到工作电脑：exit。\n', 'Back to the workstation: exit.\n'));
     return out;
   };
+  // A hint (ops labs) or a step (guided labs) has two parts: what to do, and the exact commands.
+  // { text: LL, cmds: ['…'], wait?: seconds }. Older plain-LL hints still print as text.
+  S.hintParts = h => (h && (h.cmds || h.text) && !h.zh) ? { text: h.text, cmds: h.cmds || [], wait: h.wait || 0 } : { text: h, cmds: [], wait: 0 };
+  const plainHtml = x => S.stripAnsi(S.tr(x || '').replace(/<\/?code>/g, '`').replace(/<[^>]+>/g, '')).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  const waitNote = sec => sec ? C.gray(S.L(`  然后让时钟走大约 ${S.fmtDur(sec)}（右上角可以加速）`, `  then let the clock run for about ${S.fmtDur(sec)} (speed it up at the top right)`)) + '\n' : '';
+  const cmdLines = cmds => cmds.map(c => `  ${C.gray('$')} ${C.cyan(c)}\n`).join('');
   K.hint = ctx => {
     const w = ctx.w, hs = w.scn.hints || [];
-    const plain = h => S.stripAnsi(S.tr(h).replace(/<\/?code>/g, '`').replace(/<[^>]+>/g, '')).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
     if (w.scn.steps) {
       const st = w.scn.steps[w.stepIdx || 0];
       if (!st) return C.gray(S.L('所有步骤都已完成。\n', 'All steps are done.\n'));
-      return `${C.yellow(S.L(`第 ${(w.stepIdx || 0) + 1}/${w.scn.steps.length} 步`, `Step ${(w.stepIdx || 0) + 1}/${w.scn.steps.length}`))}  ${C.bold(S.tr(st.text))}\n${plain(st.how || '')}\n`;
+      return `${C.yellow(S.L(`第 ${(w.stepIdx || 0) + 1}/${w.scn.steps.length} 步`, `Step ${(w.stepIdx || 0) + 1}/${w.scn.steps.length}`))}  ${C.bold(S.tr(st.text))}\n${plainHtml(st.how)}\n${cmdLines(st.cmds || [])}${waitNote(st.wait)}`;
     }
     if (w.hintIdx >= hs.length) return C.gray(S.L('提示已经用完。可以看看 objectives，或者回顾右侧的事件记录。\n', 'No more hints. Check objectives, or read back through the event log on the right.\n'));
     w.stats.hints++;
-    const txt = S.stripAnsi(S.tr(hs[w.hintIdx++]).replace(/<\/?code>/g, '`').replace(/<[^>]+>/g, '')).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-    return `${C.yellow(S.L(`提示 ${w.hintIdx}/${hs.length}`, `Hint ${w.hintIdx}/${hs.length}`))}  ${txt}\n`;
+    const p = S.hintParts(hs[w.hintIdx++]);
+    S.emit('hint', w);
+    return `${C.yellow(S.L(`提示 ${w.hintIdx}/${hs.length}`, `Hint ${w.hintIdx}/${hs.length}`))}  ${plainHtml(p.text)}\n${cmdLines(p.cmds)}${waitNote(p.wait)}`;
+  };
+  // Same as the Acknowledge button on an alert card.
+  K.ack = ctx => {
+    const w = ctx.w, open = Object.values(w.groups).filter(g => !g.resolved && g.sev === 'critical');
+    if (!ctx.args[0]) {
+      if (!open.length) return C.gray(S.L('没有需要确认的 critical 告警。\n', 'No critical alerts to acknowledge.\n'));
+      return open.map(g => `${g.acked ? C.green('acked  ') : C.red('firing ')} ${g.name}`).join('\n') + '\n' + C.gray(S.L('用法：ack <告警名>，和告警卡片上的“确认”按钮作用相同。\n', 'Usage: ack <AlertName>, the same as the Acknowledge button on the alert card.\n'));
+    }
+    const g = w.groups[ctx.args[0]];
+    if (!g || g.resolved) return { code: 1, out: S.L(`ack: 没有正在告警的 ${ctx.args[0]}\n`, `ack: no firing alert named ${ctx.args[0]}\n`) };
+    if (g.acked) return S.L(`${g.name} 已经确认过了。\n`, `${g.name} is already acknowledged.\n`);
+    S.ack(w, g.name);
+    return S.L(`已确认 ${g.name}。\n`, `Acknowledged ${g.name}.\n`);
   };
   K.objectives = ctx => {
     const w = ctx.w;

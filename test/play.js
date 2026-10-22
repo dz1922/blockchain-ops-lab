@@ -78,6 +78,49 @@ const nets = fs.readdirSync(dir).filter(f => f.endsWith('.js')).map(f => f.slice
     }
   }
   if (!process.env.ONLY) ids.filter(id => !covered.has(id)).forEach(id => fails.push(`${id}: no test case plays this lab`));
+  // Every lab must be completable by doing exactly what its hints (or guided steps) say:
+  // run each listed command in order, let the clock run for the stated wait, nothing else.
+  const scns = await page.evaluate(`VSIM.S.scenarios.filter(s => !${JSON.stringify(process.env.ONLY || '')} || ${JSON.stringify(process.env.ONLY || '')}.split(',').includes(s.network)).map(s => s.id)`);
+  for (const id of scns) {
+    await page.evaluate(`location.hash=''`); await page.waitForTimeout(50); await page.evaluate(`location.hash='s=${id}'`); await page.waitForTimeout(200);
+    await page.evaluate(helpers); await page.evaluate('VSIM.begin()');
+    const t0 = Date.now();
+    let r;
+    try {
+      r = await page.evaluate(`(async () => {
+        const scn = VSIM.w.scn, out = [], bad = [];
+        const tick = () => new Promise(res => setTimeout(res, 1));
+        const play = async (cmds, wait) => { for (const c of cmds) out.push('$ ' + c + '\\n' + await T.cmd(c)); await T.adv(wait || 30, 10); };
+        if (scn.steps) {
+          for (let guard = 0; guard < scn.steps.length * 2 && !VSIM.w.done; guard++) {
+            const i = VSIM.w.stepIdx || 0, st = scn.steps[i];
+            if (!st) break;
+            if (!st.cmds) bad.push('step ' + (i + 1) + ' has no cmds');
+            await play(st.cmds || [], st.wait);
+            for (let t = 0; (VSIM.w.stepIdx || 0) === i && !VSIM.w.done && t < Math.max(st.wait || 0, 600) * 3; t += 30) { VSIM.advance(30); await tick(); }
+            if ((VSIM.w.stepIdx || 0) === i && !VSIM.w.done) { bad.push('stuck at step ' + (i + 1)); break; }
+          }
+        } else {
+          (scn.hints || []).forEach((h, i) => { if (!(h && h.cmds)) bad.push('hint ' + (i + 1) + ' has no cmds'); });
+          for (const h of scn.hints || []) { const p = VSIM.S.hintParts(h); await play(p.cmds, p.wait); if (VSIM.w.done) break; }
+        }
+        for (let t = 0; !VSIM.w.done && t < (scn.limit || 6 * 3600); t += 60) { VSIM.advance(60); await tick(); }
+        const nf = out.filter(o => /command not found|No such file or directory|Usage:|usage:/.test(o)).map(o => o.split('\\n').slice(0, 3).join(' | '));
+        return { result: VSIM.w.result, viol: Object.keys(VSIM.w.violations), bad, nf, out: out.join('\\n') };
+      })()`);
+    } catch (e) { r = { error: e.message }; }
+    const f = [];
+    if (r.error) f.push('threw: ' + r.error);
+    else {
+      if (!(r.result && r.result.success)) f.push('not completed by following the hints' + (r.result ? ` (reachedGoal=${r.result.reachedGoal})` : ' (time ran out)'));
+      if (r.viol.length) f.push('violations: ' + r.viol.join(', '));
+      r.bad.forEach(x => f.push(x));
+      r.nf.forEach(x => f.push('error output: ' + x.slice(0, 200)));
+    }
+    console.log(`\n========== hints-only ${id} (${Date.now() - t0} ms) ${f.length ? 'FAIL' : 'ok'} ==========`);
+    if (f.length && process.env.VERBOSE) console.log(r.out);
+    f.forEach(x => fails.push(`hints-only ${id}: ${x}`));
+  }
   console.log('\nERRORS:', errs.length ? errs.join('\n') : 'none');
   await browser.close();
   if (errs.length) fails.push('page errors');

@@ -78,7 +78,7 @@ node test/shots.js         # desktop + mobile screenshots to /tmp/vsim-*.png
 | `alertAge` | Seconds that alerts true at t=0 have already been firing. |
 | `objectives` | `[{text, check(w)}]`. All must hold for `holdFor` simulated seconds. |
 | `forbidden` | `[{flag, text}]`. Plugins raise these with `S.flag(w, name)`. |
-| `hints` | `[html]`. |
+| `hints` | `[{ text, cmds, wait? }]`: what to do (`S.LL` HTML) and the exact commands, in order. See "Hints" below. |
 | `limit` | Simulated seconds. |
 | `score(w)` | Returns `[[label, value, 'good'\|'mid'\|'bad']]`. |
 | `debrief` | HTML. |
@@ -115,6 +115,18 @@ A scenario with `steps: [{ text, how, after?, check(w) }]` instead of `objective
 - `hint` prints the current step's `how`.
 - The lab finishes when the last step completes.
 - `forbidden` traps still apply.
+
+## Hints
+
+Every lab must be completable by doing exactly what its hints say. A hint (step 3) or a step (step 2) has two parts:
+
+- `text` (for a step, `how`): what to do and why, in one or two sentences.
+- `cmds`: the exact commands, in order. Each one is a single line that can be pasted as is. No placeholders such as `<volume-id>`: use the lab's fictional IDs, or `$(…)`/variables set by an earlier command in the same hint. Where a hint involves moving between machines, include `ssm <node>`, `sudo -i` and `exit` as commands. Acknowledging an alert is `ack <AlertName>`.
+- `wait` (optional): simulated seconds to let the clock run after the commands, for example while a node bootstraps.
+
+`hint` prints both parts. Used hints stay in the goals box, and clicking a command there puts it in the terminal.
+
+`test/play.js` checks this for every lab: it runs only the hint (or step) commands in order and lets the clock run for each `wait`. The lab must then finish with success and no violations, and no command may print `command not found`, `No such file or directory` or a usage message. Hints can still teach: a command that looks at something (`journalctl`, `curl … | jq`) is a fine hint command.
 
 ## Adding a network
 

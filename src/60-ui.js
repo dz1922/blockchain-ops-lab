@@ -53,6 +53,8 @@
     stepsTitle: { zh: '步骤', en: 'Steps' },
     rRunDone: { zh: '全部步骤完成', en: 'All steps complete' },
     runDoneNext: { zh: '下一步：生产问题挑战', en: 'Next: production challenges' },
+    hintsUsed: { zh: '已用的提示', en: 'Hints used' },
+    waitFor: { zh: '然后让时钟走大约 {d}（右上角可以加速）。', en: 'Then let the clock run for about {d} (speed it up at the top right).' },
     clickToPaste: { zh: '点击命令可以填入终端。', en: 'Click a command to put it in the terminal.' },
     heroMeta: { zh: ['{nets} 个网络', '{lessons} 节基础课', '{labs} 个练习', '无需安装，进度保存在本浏览器'], en: ['{nets} networks', '{lessons} fundamentals courses', '{labs} labs', 'Nothing to install; progress stays in this browser'] },
     howTitle: { zh: '练习环境', en: 'The practice environment' },
@@ -380,6 +382,8 @@
   }
 
   /* ---------- side panels ---------- */
+  const cmdsHtml = (cmds, wait) => (cmds && cmds.length ? `<div class="cmds">${cmds.map(c => `<code>${S.esc(c)}</code>`).join('')}</div>` : '')
+    + (wait ? `<div class="wait">${t('waitFor', { d: S.fmtDur(wait) })}</div>` : '');
   function renderSide(force) {
     if (!w) return;
     const now = performance.now();
@@ -407,11 +411,12 @@
       ? `<ul>${steps.map((x, i) => {
           // the current step is open by default; any step can be opened or closed by clicking its title
           const open = w.stepOpen && w.stepOpen[i] !== undefined ? w.stepOpen[i] : (!w.done && i === cur);
-          const body = open ? `<div class="how">${tr(x.how || '')}${st[i] && x.after ? `<div class="after">${tr(x.after)}</div>` : ''}</div>` : '';
+          const body = open ? `<div class="how">${tr(x.how || '')}${cmdsHtml(x.cmds, x.wait)}${st[i] && x.after ? `<div class="after">${tr(x.after)}</div>` : ''}</div>` : '';
           return `<li class="${st[i] ? 'ok' : ''} ${!w.done && i === cur ? 'cur' : ''} ${open ? 'open' : ''}"><span class="m">${st[i] ? '✔' : i === cur ? '▸' : '○'}</span><button class="st-t" data-step="${i}" aria-expanded="${open}">${i + 1}. ${tr(x.text)}<i>${open ? '−' : '+'}</i></button>${body}</li>`;
         }).join('')}</ul><div class="sub" style="text-transform:none;letter-spacing:0">${t('clickToPaste')}</div>`
-      : `<ul>${os.map((o, i) => `<li class="${st[i] ? 'ok' : ''}"><span class="m">${st[i] ? '✔' : '○'}</span><span>${tr(o.text)}</span></li>`).join('')}</ul>`;
-    const objKey = steps ? `${S.lang}|${cur}|${w.done}|${Object.keys(w.violations).length}|${JSON.stringify(w.stepOpen || {})}` : null;
+      : `<ul>${os.map((o, i) => `<li class="${st[i] ? 'ok' : ''}"><span class="m">${st[i] ? '✔' : '○'}</span><span>${tr(o.text)}</span></li>`).join('')}</ul>`
+        + (w.hintIdx ? `<div class="sub">${t('hintsUsed')}</div><ol class="hints">${(w.scn.hints || []).slice(0, w.hintIdx).map(h => { const p = S.hintParts(h); return `<li><div class="how">${tr(p.text)}${cmdsHtml(p.cmds, p.wait)}</div></li>`; }).join('')}</ol>` : '');
+    const objKey = !steps ? `${S.lang}|${st.join()}|${w.done}|${Object.keys(w.violations).length}|${w.hintIdx}|${Math.floor((w.okFor || 0) / hold * 40)}` : steps ? `${S.lang}|${cur}|${w.done}|${Object.keys(w.violations).length}|${JSON.stringify(w.stepOpen || {})}` : null;
     const objFull = `${objHtml}
       ${(w.scn.forbidden || []).length ? `<div class="sub">${t('doNot')}</div><ul>${w.scn.forbidden.map(f => `<li class="${w.violations[f.flag] !== undefined ? 'no' : ''}"><span class="m">${w.violations[f.flag] !== undefined ? '✕' : '·'}</span><span>${tr(f.text)}</span></li>`).join('')}</ul>` : ''}
       ${!steps && st.length && st.every(Boolean) && !w.done ? `<div class="sub">${t('hold', { n: hold })}</div><div class="hold"><i style="width:${Math.min(100, w.okFor / hold * 100)}%"></i></div>` : ''}`;
@@ -514,6 +519,7 @@
   S.on('done', ww => { renderSide(true); setTimeout(() => { if (ww === w && w.result) showDone(); }, 400); });
   S.on('call', (ww, g) => toast(`<b>${t('toastTitle')}</b><br>${t('toastBody', { name: g.name, n: g.calls })}`));
   S.on('tick', () => renderSide(false));
+  S.on('hint', () => { renderSide.objKey = null; });
 
   setInterval(() => { if (w && !paused) S.tick(w, 0.2 * speed); }, 200);
 

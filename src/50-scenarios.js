@@ -239,64 +239,83 @@
       'info.uptime\'s rewardingStakePercentage is a common source of misreadings. It is how much of the network\'s stake this node can see online, so it describes the network, not the node. Two nodes whose real uptimes differ by several points can read almost the same value. An alert built on it pages every node whenever other validators drop off, and the one node genuinely near the floor cannot be told apart. To judge the reward, read this validator\'s own record on the P-Chain from an independent node such as api.avax.network, never from the node itself. An alert such as RewardAtRiskAtPeriodEnd says the reward is about to be lost; the arithmetic decides. Uptime is cumulative, so every remaining day online pulls it up. A node at 89.25% with four days left still ends the period at 90.02% if nothing else goes wrong. That is a margin of about 15 minutes, and any planned downtime uses it up. Changes that stop an instance belong in periods with ample margin. Also note that the end of a period usually raises no alert at all: the validator drops out of the current validator set and the uptime alerts go quiet. Re-registering with the same NodeID, never with a new signer.key, has to be planned ahead.'),
   });
 
+  /* ---------- Solana labs S1–S3 (Alpenglow cluster) ---------- */
+  const SH = () => S.networks.solana.helpers;
+  const STAKED = '7nYTxq2Lw5RkV8dB3cM9pHf4Js6Ue1Zg2aNXyQrK5tPv', VOTEACC = 'Gv4kQpS2mT8xWc6RbN3hJd9Fy7Ze5Ua1LrK2nHsXqPtM';
+  const S1_TO_BOUNDARY = 9600; // 2 h 40 min to the boundary into epoch N+1, which decides N+2
+
   S.registerScenario({
-    id: 'sol-balance', network: 'solana', module: SOL, lab: 'S1', difficulty: 1, minutes: 8,
-    title: LL('identity 余额告警', 'Identity balance alert'),
-    tagline: LL('testnet 验证者的 identity 余额在持续下降。', 'The identity balance of a testnet validator keeps falling.'),
+    id: 'sol-balance', network: 'solana', module: SOL, lab: 'S1', difficulty: 2, minutes: 10,
+    title: LL('vote account 余额告警', 'Vote account balance alert'),
+    tagline: LL('vote account 余额告警已经确认了好几天，下一个 epoch 边界还有不到三小时。', 'The vote account alert has sat acknowledged for days, and the next epoch boundary is less than three hours away.'),
     learn: [
-      LL('投票交易的手续费由谁支付，余额耗尽会发生什么', 'Who pays for vote transactions, and what happens when the balance runs out'),
-      LL('分清 testnet 与 mainnet，正确地给 identity 补充余额', 'Keeping testnet and mainnet apart while funding an identity'),
-      LL('为什么同一个 identity 不能同时在两台机器上运行', 'Why one identity must never run on two machines at once'),
+      LL('准入费从哪个账户扣、什么时候扣，以及 N+1 与 N+2 的时间关系', 'Which account pays the admission ticket, when it is debited, and how N+1 and N+2 are decided'),
+      LL('给 vote account 充值，而不是给 identity；两个账户各有自己的下限', 'Funding the vote account rather than the identity, and keeping both accounts above their floors'),
+      LL('分清 testnet 与 mainnet；确认告警不等于处理了告警', 'Keeping testnet and mainnet apart, and why acknowledging a page is not fixing it'),
     ],
     brief: LL(
-      `<p>周三晚上 8 点，Solana testnet 验证者的 identity 余额告警响了。验证者每投一票都要支付一笔交易手续费，由 identity 账户承担，这台机器每天大约消耗 <b>2.1 SOL</b>。</p><p>如果余额耗尽，投票会停止，几十秒后验证者就会被标记为 delinquent。告警响起时通常还有几天时间，但如果没人处理，它往往会在深夜用完。</p><p>请在验证者停止投票之前解决问题，并用链上数据确认结果。</p>`,
-      `<p>At 8 pm on a Wednesday the identity balance alert fires for a Solana testnet validator. Every vote is a transaction whose fee the identity account pays, and this machine spends about <b>2.1 SOL</b> a day.</p><p>If the balance runs out, voting stops and the validator is marked delinquent within a minute. The alert usually leaves a few days of runway, but left alone the balance tends to run out in the middle of the night.</p><p>Fix it before the validator stops voting, and confirm the result from on-chain data.</p>`),
-    startAt: '2026-08-26T20:00:00Z',
-    config: { balance: 9.4, burnPerDay: 2.1 },
+      `<p>周二 09:20 UTC。Solana testnet 验证者的 <code>SolanaVoteAccountBalanceLow</code> 从上周四起一直处于触发状态。当时有人在值班频道里确认了它，跟进的事却没人接手；确认过的告警不会再打电话。交接记录只写了一句："vote account 告警已确认，identity 余额正常，下周再看。"</p><p>在 Alpenglow 集群上，vote account 在每个 epoch 边界支付准入费，换取下一个 epoch 的席位。<code>solana epoch-info -ut</code> 显示当前 epoch 还剩不到三小时。</p><p>弄清这个告警对即将到来的边界意味着什么，处理它，并用链上数据确认验证者保住了席位。告警阈值：vote account 低于 5 SOL，identity 低于 9 SOL，持续 15 分钟即为 critical。</p>`,
+      `<p>Tuesday, 09:20 UTC. <code>SolanaVoteAccountBalanceLow</code> has been firing for a Solana testnet validator since last Thursday. Someone acknowledged it in the on-call channel, and the follow-up was never picked up; an acknowledged alert does not page again. The handover note reads: "vote account alert acked, identity balance is fine, will look next week."</p><p>On an Alpenglow cluster the vote account pays an admission ticket at every epoch boundary for a place in the following epoch. <code>solana epoch-info -ut</code> shows less than three hours left in the current epoch.</p><p>Work out what the alert means for the coming boundary, fix it, and confirm from on-chain data that the validator keeps its place. Alert thresholds: vote account below 5 SOL and identity below 9 SOL, each critical after 15 minutes.</p>`),
+    startAt: '2026-11-10T09:20:00Z', alertAge: 5 * 86400,
+    config: { balance: 9.6, voteBalance: 0.81, epoch: 1127, toBoundary: S1_TO_BOUNDARY, mainnetWallet: true },
+    setup(w) { w.chain.s1Epoch = SH().epoch(w); },
     objectives: [
-      { text: LL('identity 余额不低于 10 SOL（testnet）', 'Identity balance is at least 10 SOL (testnet)'), check: w => S.networks.solana.helpers.bal(w) >= 10 },
-      { text: LL('验证者正在投票，没有被标记为 delinquent', 'The validator is voting and not delinquent'), check: w => !S.networks.solana.helpers.delinquent(w) && S.networks.solana.helpers.isVoting(w, w.nodes['sol-1']) },
-      { text: LL('补充余额后，用链上数据确认一次（solana validators、vote-account 或 catchup）', 'After funding, confirm once from on-chain data (solana validators, vote-account or catchup)'), check: w => w.flags.verified !== undefined },
+      { text: LL('vote account 余额不低于 5 SOL（testnet）', 'The vote account holds at least 5 SOL (testnet)'), check: w => SH().voteBal(w) >= 5 },
+      { text: LL('identity 余额不低于 9 SOL（testnet）', 'The identity holds at least 9 SOL (testnet)'), check: w => SH().bal(w) >= 9 },
+      { text: LL('epoch 边界已过，验证者被选入再下一个 epoch（N+2）', 'The epoch boundary has passed and the validator is admitted to the epoch after next (N+2)'), check: w => w.chain.admitted[w.chain.s1Epoch + 2] === true },
+      { text: LL('验证者正在投票，没有 delinquent', 'The validator is voting and not delinquent'), check: w => !SH().delinquent(w) && SH().isVoting(w, w.nodes['sol-1']) },
+      { text: LL('充值后用链上数据确认一次（solana vote-account、balance 或 validators）', 'After funding, confirm once from on-chain data (solana vote-account, balance or validators)'), check: w => w.flags.verified !== undefined },
     ],
-    forbidden: [{ flag: 'double_sign', text: LL('让两台机器同时使用质押 identity（备用机 sol-backup 配置的是同一个 identity）', 'Running the staked identity on two machines at once (the standby sol-backup is configured with the same identity)') }],
+    forbidden: [
+      { flag: 'mainnet_spend', text: LL('处理 testnet 验证者时花掉了 mainnet 的 SOL', 'Spending mainnet SOL while working on a testnet validator') },
+      { flag: 'double_sign', text: LL('让两台机器同时使用质押 identity（备用机 sol-backup 配置的是同一个 identity）', 'Running the staked identity on two machines at once (the standby sol-backup is configured with the same identity)') },
+    ],
     hints: [
-      LL('先看笔记：<code>cat ~/NOTES.md</code>。再查余额：<code>solana balance &lt;identity&gt; -ut</code>。工作电脑上的 CLI 默认连接 mainnet，所以要加 <code>-ut</code>。', 'Read the notes first: <code>cat ~/NOTES.md</code>. Then check the balance: <code>solana balance &lt;identity&gt; -ut</code>. The CLI on the workstation defaults to mainnet, hence <code>-ut</code>.'),
-      LL('用资金账户转账：<code>solana transfer &lt;identity&gt; 10 --from ~/funding-testnet.json -ut</code>。水龙头 airdrop 每次只能领 1 SOL，而且有频率限制。', 'Transfer from the funding account: <code>solana transfer &lt;identity&gt; 10 --from ~/funding-testnet.json -ut</code>. The faucet airdrop gives 1 SOL at a time and is rate limited.'),
-      LL('转账后确认：<code>solana validators -ut</code>，或者 <code>ssm sol-1</code> 后执行 <code>solana catchup --our-localhost</code>。', 'Confirm afterwards: <code>solana validators -ut</code>, or <code>ssm sol-1</code> and <code>solana catchup --our-localhost</code>.'),
-      LL('不要启动 sol-backup。它的 unit 文件配置的是同一个质押 identity，可以用 <code>systemctl cat agave-validator</code> 查看。', 'Do not start sol-backup. Its unit file points at the same staked identity; see <code>systemctl cat agave-validator</code>.'),
+      LL(`先看笔记和余额：<code>cat ~/NOTES.md</code>、<code>solana balance ${VOTEACC} -ut</code>、<code>solana balance ${STAKED} -ut</code>、<code>solana epoch-info -ut</code>。工作电脑上的 CLI 默认连接 mainnet，所以要加 <code>-ut</code>。`, `Read the notes and the balances first: <code>cat ~/NOTES.md</code>, <code>solana balance ${VOTEACC} -ut</code>, <code>solana balance ${STAKED} -ut</code>, <code>solana epoch-info -ut</code>. The CLI on the workstation defaults to mainnet, hence <code>-ut</code>.`),
+      LL('准入费是 0.8 SOL，另外要留出免租金额，合计约 0.827 SOL。bank 进入下一个 epoch 的那一刻，会按此刻的余额决定再下一个 epoch 的席位。余额不够，边界之后再充值就赶不上了。', 'The ticket is 0.8 SOL, and the rent-exempt minimum must stay on top, about 0.827 SOL in all. The moment the bank enters the next epoch, the balance at that moment decides the place in the epoch after it. If it is short then, a top-up after the boundary is too late.'),
+      LL(`给 vote account 充值，任何人都能往里转：<code>solana transfer ${VOTEACC} 6 --from ~/funding-testnet.json -ut</code>。给 identity 充值没有用，准入费不从它那里扣。identity 只有 9.6 SOL，从它转出会让它跌破 9 SOL 的下限。`, `Fund the vote account; anyone can deposit to it: <code>solana transfer ${VOTEACC} 6 --from ~/funding-testnet.json -ut</code>. Funding the identity does not help, because the ticket is not taken from it. The identity holds only 9.6 SOL, and taking SOL from it would put it under its 9 SOL floor.`),
+      LL(`确认：<code>solana vote-account ${VOTEACC} -ut</code>。然后把时钟调快，越过边界。事件日志会显示准入费被扣除、验证者被选入 N+2。不要启动 sol-backup。`, `Confirm with <code>solana vote-account ${VOTEACC} -ut</code>. Then speed up the clock past the boundary. The event log shows the ticket being debited and the validator admitted to N+2. Do not start sol-backup.`),
     ],
-    limit: 6 * 86400, holdFor: 60,
-    score: w => {
+    limit: 6 * 3600, holdFor: 60,
+    tick(w) {
       const ch = w.chain;
+      if (ch.fundedAt == null && SH().voteBal(w) >= SH().VOTE_FLOOR) ch.fundedAt = w.t;
+      if (!w.done && ch.admitted[ch.s1Epoch + 2] === false) {
+        S.event(w, 'bad', S.LL(`vote account 在边界时余额不足，验证者缺席 epoch ${ch.s1Epoch + 2}：这个 epoch 不能投票、不能出块、没有奖励。现在充值，最早也只能赶上 epoch ${ch.s1Epoch + 3}。`, `The vote account was short at the boundary, so the validator sits out epoch ${ch.s1Epoch + 2}: no voting, no blocks and no rewards. A top-up now counts from epoch ${ch.s1Epoch + 3} at the earliest.`));
+        S.finish(w, false);
+      }
+    },
+    score: w => {
+      const ch = w.chain, spare = ch.fundedAt != null ? S1_TO_BOUNDARY - ch.fundedAt : null;
       return [
-        [LL('期间最低余额', 'Lowest balance'), `◎ ${(ch.minBal ?? 0).toFixed(3)}`, ch.minBal >= 5 ? 'good' : ch.minBal > 0.01 ? 'mid' : 'bad'],
+        [LL('充值时距边界还剩', 'Time left before the boundary when funded'), spare != null ? S.fmtDur(Math.max(0, spare)) : '—', spare != null && spare > 3600 ? 'good' : spare != null && spare > 0 ? 'mid' : 'bad'],
+        [LL('期间 identity 最低余额', 'Lowest identity balance'), `◎ ${(ch.minBal ?? 0).toFixed(3)}`, ch.minBal >= 9 ? 'good' : 'bad'],
         [LL('delinquent 时长', 'Time delinquent'), S.fmtDur(ch.delinquentSec || 0), (ch.delinquentSec || 0) === 0 ? 'good' : 'bad'],
       ];
     },
     debrief: LL(
-      '本练习参考了一次真实的 testnet 事故：identity 余额在晚上 19:00 只剩 0.0008 SOL，14 分钟后验证者变为 delinquent。当时的告警阈值是 0.1 SOL，只提前了 70 分钟，而且是在半夜。事后阈值改为按剩余天数设置（低于 8 SOL 预警，低于 5 SOL 严重），告警标题中也写明了网络和 identity。',
-      'This lab is based on a real testnet incident. The identity balance was down to 0.0008 SOL at 19:00 and the validator became delinquent 14 minutes later. The alert threshold at the time was 0.1 SOL, which gave 70 minutes of warning, at night. Afterwards the thresholds were set by days of runway (warning below 8 SOL, critical below 5 SOL), and the alert title was changed to name the network and the identity.'),
+      '本练习按一种常见的模式编写：一台 testnet 验证者的 vote account 在 epoch 边界时低于准入费，于是缺席了整个下一个 epoch。验证者进程一直在运行，钱包里也有钱，只是钱放错了账户，或者充值晚了一个边界。要点有三条。第一，准入费从 vote account 扣，而不是从 identity 扣。identity 仍然签名、收出块收入、付普通交易费，但不再付投票费；给它充值救不了准入。第二，时间关系：bank 进入 epoch N 的那一刻，运行时选出 N+1 的验证者集合并扣费；此刻余额不足准入费加免租金额，就缺席 N+1，N 开始之后的充值最早赶上 N+2。所以充值要在边界之前完成。vote account 中待发给委托人的奖励不计入准入余额。第三，5 SOL 的告警线大约是六个边界的准入费，告警响起时还有几天时间。确认告警只是停止打电话，不会让余额回升。在告警的处理记录里写明负责人和截止的边界，或者用 <code>vote-update-commission-collector</code> 把出块收入转进 vote account，让它自己补充。admin RPC 的 <code>validatorAdmissionTicketStatus</code> 能提前两个 epoch 报告准入资格。',
+      'This lab follows a common pattern: a testnet validator whose vote account fell below the ticket at an epoch boundary sat out the whole next epoch. The validator process kept running and there was money in the wallets; it was in the wrong account, or it arrived one boundary late. Three points. First, the ticket comes out of the vote account, not the identity. The identity still signs, receives block revenue and pays ordinary transaction fees, but it no longer pays for votes, and funding it does nothing for admission. Second, the timing: when the bank crosses into epoch N, the runtime picks the set for N+1 and debits the ticket. A vote account short of the ticket plus rent at that moment sits out N+1, and a top-up made after N has started counts from N+2 at the earliest. So fund before the boundary. Pending delegator rewards held in the vote account do not count towards the ticket. Third, the 5 SOL alert floor is about six boundaries of tickets, so the page leaves days to act. Acknowledging it stops the phone; it does not raise the balance. Record an owner and the deadline boundary on the alert, or point block revenue at the vote account with <code>vote-update-commission-collector</code> so that it refills itself. The admin RPC method <code>validatorAdmissionTicketStatus</code> reports eligibility two epochs ahead.'),
   });
-  const SH = () => S.networks.solana.helpers;
-  const STAKED = '7nYTxq2Lw5RkV8dB3cM9pHf4Js6Ue1Zg2aNXyQrK5tPv';
+
   S.registerScenario({
     id: 'sol-failover', network: 'solana', module: SOL, lab: 'S2', difficulty: 3, minutes: 15,
     title: LL('计划内的主备切换', 'A planned switch to the standby'),
-    tagline: LL('sol-1 所在的机柜 15:00 断电维护。把投票交给热备机，而且不能双签。', 'The rack holding sol-1 loses power at 15:00 for maintenance. Hand voting to the hot standby without ever double signing.'),
+    tagline: LL('sol-1 所在的机柜 15:00 断电维护。把投票交给热备机，vote history 跟着走，而且不能双签。', 'The rack holding sol-1 loses power at 15:00 for maintenance. Hand voting to the hot standby with the vote history, and never double sign.'),
     learn: [
-      LL('身份切换的顺序：主节点先放手，备用机再接手', 'The order of an identity switch: the primary lets go before the standby takes over'),
-      LL('tower 文件的作用，以及 set-identity --require-tower', 'What the tower file is for, and set-identity --require-tower'),
-      LL('防止旧主节点重新上线时带着质押 identity 启动', 'Keeping the old primary from coming back with the staked identity'),
+      LL('身份切换的顺序：主节点先放手，vote history 跟过去，备用机再接手', 'The order of an identity switch: the primary lets go, the vote history moves, then the standby takes over'),
+      LL('vote_history 文件的作用，以及 set-identity 默认要求它', 'What the vote_history file is for, and why set-identity requires it by default'),
+      LL('什么时候才能用 --do-not-require-vote-history，以及如何防止旧主节点带着质押 identity 重新上线', 'When --do-not-require-vote-history is allowed, and keeping the old primary from coming back with the staked identity'),
     ],
     brief: LL(
-      `<p>现在是 14:20 UTC。机房通知：sol-1 所在的机柜将在 <b>15:00</b> 断电维护，大约 45 分钟。</p><p>sol-backup 是热备机：它已经追上链头，用自己的非质押 identity 运行，机器上也存有一份质押 keypair。请在 15:00 之前把投票交给 sol-backup。</p><p>要求：任何时刻都不能有两台机器同时使用质押 identity；备用机要带着主节点的 tower 接手；sol-1 维护结束重新通电后，不能变成第二个用质押 identity 运行的验证者。</p>`,
-      `<p>It is 14:20 UTC. The data centre has announced that the rack holding sol-1 will be powered off at <b>15:00</b> for about 45 minutes of maintenance.</p><p>sol-backup is a hot standby: it is caught up, runs its own unstaked identity, and holds a copy of the staked keypair. Move voting to sol-backup before 15:00.</p><p>The rules: at no moment may two machines run the staked identity; the standby must take over with the primary's tower; and when sol-1 powers back on after maintenance, it must not become a second validator running the staked identity.</p>`),
-    startAt: '2026-10-07T14:20:00Z',
-    config: { balance: 14, burnPerDay: 2.1, standby: 'unstaked', setIdentity: true, maintenance: { host: 'sol-1', off: 2400, on: 5100 } },
+      `<p>现在是 14:20 UTC。机房通知：sol-1 所在的机柜将在 <b>15:00</b> 断电维护，大约 45 分钟。</p><p>sol-backup 是热备机：它已经追上链头，用自己的非质押 identity 运行，机器上也存有一份质押 keypair。请在 15:00 之前把投票交给 sol-backup。</p><p>要求：任何时刻都不能有两台机器同时使用质押 identity；备用机要带着主节点的 vote history 文件接手；sol-1 维护结束重新通电后，不能变成第二个用质押 identity 运行的验证者。</p>`,
+      `<p>It is 14:20 UTC. The data centre has announced that the rack holding sol-1 will be powered off at <b>15:00</b> for about 45 minutes of maintenance.</p><p>sol-backup is a hot standby: it is caught up, runs its own unstaked identity, and holds a copy of the staked keypair. Move voting to sol-backup before 15:00.</p><p>The rules: at no moment may two machines run the staked identity; the standby must take over with the primary's vote history file; and when sol-1 powers back on after maintenance, it must not become a second validator running the staked identity.</p>`),
+    startAt: '2026-11-18T14:20:00Z',
+    config: { balance: 14, voteBalance: 7.2, epoch: 1135, toBoundary: 10 * 3600, standby: 'unstaked', setIdentity: true, maintenance: { host: 'sol-1', off: 2400, on: 5100 } },
     setup(w) {
       S.fsWrite(w.laptop, '/home/ops/NOTES.md', S.L(
-        `# testnet 验证者\n- 质押 identity: ${STAKED}\n- vote account: ${w.chain.vote}\n- sol-1（主，198.51.100.21）：非质押 keypair 在 /home/sol/unstaked-identity.json\n- sol-backup（热备，198.51.100.22）：平时用自己的非质押 identity 运行；质押 keypair 在 /home/sol/validator-keypair.json\n- 两台的 ledger 和 tower 文件都在 /mnt/ledger；sol 和 root 用户可以互相 scp\n- 2026-10-07 15:00–15:45 UTC：机柜维护，sol-1 断电\n`,
-        `# testnet validator\n- staked identity: ${STAKED}\n- vote account: ${w.chain.vote}\n- sol-1 (primary, 198.51.100.21): unstaked keypair at /home/sol/unstaked-identity.json\n- sol-backup (hot standby, 198.51.100.22): runs its own unstaked identity; staked keypair at /home/sol/validator-keypair.json\n- ledger and tower files are in /mnt/ledger on both; the sol and root users can scp between them\n- 2026-10-07 15:00-15:45 UTC: rack maintenance, sol-1 powered off\n`));
+        `# testnet 验证者\n- 质押 identity: ${STAKED}\n- vote account: ${w.chain.vote}\n- sol-1（主，198.51.100.21）：非质押 keypair 在 /home/sol/unstaked-identity.json\n- sol-backup（热备，198.51.100.22）：平时用自己的非质押 identity 运行；质押 keypair 在 /home/sol/validator-keypair.json\n- 两台的 ledger 和 vote history 文件（vote_history-<IDENTITY>.bin）都在 /mnt/ledger；sol 和 root 用户可以互相 scp\n- 11-18 15:00–15:45 UTC：机柜维护，sol-1 断电\n`,
+        `# testnet validator\n- staked identity: ${STAKED}\n- vote account: ${w.chain.vote}\n- sol-1 (primary, 198.51.100.21): unstaked keypair at /home/sol/unstaked-identity.json\n- sol-backup (hot standby, 198.51.100.22): runs its own unstaked identity; staked keypair at /home/sol/validator-keypair.json\n- ledger and vote history files (vote_history-<IDENTITY>.bin) are in /mnt/ledger on both; the sol and root users can scp between them\n- 11-18 15:00-15:45 UTC: rack maintenance, sol-1 powered off\n`));
     },
     objectives: [
       { text: LL('sol-backup 用质押 identity 投票，验证者没有 delinquent', 'sol-backup votes with the staked identity and the validator is not delinquent'), check: w => SH().isVoting(w, w.nodes['sol-backup']) && !SH().delinquent(w) },
@@ -305,26 +324,27 @@
     ],
     forbidden: [
       { flag: 'double_sign', text: LL('让两台机器同时使用质押 identity', 'Running the staked identity on two machines at once') },
-      { flag: 'no_tower', text: LL('备用机在没有主节点 tower 文件的情况下接管质押 identity', 'Taking over the staked identity on the standby without the primary\'s tower file') },
+      { flag: 'vh_override', text: LL('主节点还能访问时，用 --do-not-require-vote-history 让备用机不带 vote history 接管', 'Using --do-not-require-vote-history to take over without the vote history while the primary was still reachable') },
     ],
     hints: [
       LL('先确认备用机已经追上：<code>ssm sol-backup</code>、<code>solana catchup --our-localhost</code>、<code>agave-validator -l /mnt/ledger monitor</code>（Ctrl+C 退出），然后 <code>exit</code>。笔记在工作电脑的 <code>~/NOTES.md</code>。', 'First confirm the standby is caught up: <code>ssm sol-backup</code>, <code>solana catchup --our-localhost</code>, <code>agave-validator -l /mnt/ledger monitor</code> (Ctrl+C to stop), then <code>exit</code>. Notes are in <code>~/NOTES.md</code> on the workstation.'),
       LL('在 sol-1 上以 root：<code>agave-validator -l /mnt/ledger wait-for-restart-window --min-idle-time 2 --skip-new-snapshot-check</code>，然后 <code>agave-validator -l /mnt/ledger set-identity /home/sol/unstaked-identity.json</code>。从这一刻起 sol-1 不再用质押 identity 签名。', 'On sol-1 as root: <code>agave-validator -l /mnt/ledger wait-for-restart-window --min-idle-time 2 --skip-new-snapshot-check</code>, then <code>agave-validator -l /mnt/ledger set-identity /home/sol/unstaked-identity.json</code>. From then on sol-1 no longer signs with the staked identity.'),
-      LL(`把 tower 拷到备用机：<code>scp /mnt/ledger/tower-1_9-${STAKED}.bin sol-backup:/mnt/ledger/</code>`, `Copy the tower to the standby: <code>scp /mnt/ledger/tower-1_9-${STAKED}.bin sol-backup:/mnt/ledger/</code>`),
-      LL(`在 sol-backup 上以 root：<code>agave-validator -l /mnt/ledger set-identity --require-tower /home/sol/validator-keypair.json</code>。确认：<code>solana gossip | grep ${STAKED}</code> 显示 198.51.100.22。`, `On sol-backup as root: <code>agave-validator -l /mnt/ledger set-identity --require-tower /home/sol/validator-keypair.json</code>. Confirm with <code>solana gossip | grep ${STAKED}</code>, which should show 198.51.100.22.`),
+      LL(`把 vote history 拷到备用机：<code>scp /mnt/ledger/vote_history-${STAKED}.bin sol-backup:/mnt/ledger/</code>`, `Copy the vote history to the standby: <code>scp /mnt/ledger/vote_history-${STAKED}.bin sol-backup:/mnt/ledger/</code>`),
+      LL(`在 sol-backup 上以 root：<code>agave-validator -l /mnt/ledger set-identity /home/sol/validator-keypair.json</code>。它默认要求 vote history 文件，缺了就报错，不要用 <code>--do-not-require-vote-history</code> 绕过。确认：<code>solana gossip | grep ${STAKED}</code> 显示 198.51.100.22。`, `On sol-backup as root: <code>agave-validator -l /mnt/ledger set-identity /home/sol/validator-keypair.json</code>. It requires the vote history file by default and fails without it; do not bypass that with <code>--do-not-require-vote-history</code>. Confirm with <code>solana gossip | grep ${STAKED}</code>, which should show 198.51.100.22.`),
       LL('15:45 sol-1 会重新通电，systemd 按 unit 文件启动它。在 sol-1 上执行 <code>systemctl disable agave-validator</code>，或者 <code>sed -i \'s/validator-keypair.json/unstaked-identity.json/\' /etc/systemd/system/agave-validator.service</code>。', 'sol-1 powers back on at 15:45 and systemd starts it from its unit file. On sol-1, run <code>systemctl disable agave-validator</code>, or <code>sed -i \'s/validator-keypair.json/unstaked-identity.json/\' /etc/systemd/system/agave-validator.service</code>.'),
     ],
     limit: 3 * 3600, holdFor: 60,
     score: w => {
       const gap = w.chain.noVoteSec || 0;
       return [
-        [LL('没有投票的时间（合计）', 'Time without voting (total)'), S.fmtDur(gap), gap < 60 ? 'good' : gap < 300 ? 'mid' : 'bad'],
+        [LL('没有投票的时间（合计）', 'Time without voting (total)'), S.fmtDur(gap), gap < 30 ? 'good' : gap < 300 ? 'mid' : 'bad'],
         [LL('delinquent 时长', 'Time delinquent'), S.fmtDur(w.chain.delinquentSec || 0), (w.chain.delinquentSec || 0) === 0 ? 'good' : 'mid'],
+        [LL('跳过的 leader slot', 'Leader slots skipped'), String(w.chain.skippedSlots || 0), (w.chain.skippedSlots || 0) === 0 ? 'good' : 'mid'],
       ];
     },
     debrief: LL(
-      '本练习按通用的身份热切换步骤编写。迁移验证者或切换主备时，质押 identity 往往不止存在于一处：新旧主机、密钥备份，以及已经退役的机器上都可能留有副本。由此得出一条规则：任何时候都不能用这把密钥启动第二个验证者进程，退役的机器即使重新上线也不行。切换的顺序就是保护：主节点先用 set-identity 放手，tower 跟着 identity 走，备用机再用 --require-tower 接手。只删除密钥文件不能阻止正在运行的进程继续用内存中的密钥签名。实际操作中这几步会写成脚本，投票空档只有几秒；手工操作时间更长，超过约 51 秒验证者就会被标记为 delinquent。',
-      'This lab follows the general identity hot-swap procedure. When a validator is migrated or switched to a standby, the staked identity usually exists in more than one place: the old and new hosts, key backups, and machines that have been retired may all hold a copy. That gives one rule: no second validator process may ever start with the key, and a retired machine that comes back online is no exception. The switch order is the safeguard. The primary lets go with set-identity, the tower travels with the identity, and only then does the standby take over with --require-tower. Deleting a key file does not stop a running process from signing with the key it holds in memory. In practice these steps are scripted and the voting gap is a few seconds. Done by hand it takes longer, and a gap over about 51 seconds marks the validator delinquent.'),
+      '本练习按 Agave 文档中的节点切换步骤编写。迁移验证者或切换主备时，质押 identity 往往不止存在于一处：新旧主机、密钥备份，以及已经退役的机器上都可能留有副本。由此得出一条规则：任何时候都不能用这把密钥启动第二个验证者进程，退役的机器即使重新上线也不行。切换的顺序就是保护：主节点先用 set-identity 放手，vote history 文件跟着 identity 走，备用机再用 set-identity 接手。在 Alpenglow 下，共识状态保存在 <code>vote_history-&lt;IDENTITY&gt;.bin</code> 里，它取代了 TowerBFT 的 tower 文件；set-identity 默认要求这个文件，所以 <code>--require-tower</code> 已不再需要。<code>--do-not-require-vote-history</code> 只用于紧急情况：主节点无法访问或已损坏，而且备用机已经追过主节点的最后一票。只删除密钥文件，不能阻止正在运行的进程继续用内存中的密钥签名。实际操作中这几步会写成脚本，投票空档只有几秒。200 ms 的 slot 下，手工操作的空档稍长，约 26 秒验证者就会被标记为 delinquent，落在空档里的 leader 窗口会变成 skip 证书。',
+      'This lab follows the node failover procedure in the Agave documentation. When a validator is migrated or switched to a standby, the staked identity usually exists in more than one place: the old and new hosts, key backups, and machines that have been retired may all hold a copy. That gives one rule: no second validator process may ever start with the key, and a retired machine that comes back online is no exception. The switch order is the safeguard. The primary lets go with set-identity, the vote history file travels with the identity, and only then does the standby take over with set-identity. Under Alpenglow the consensus state lives in <code>vote_history-&lt;IDENTITY&gt;.bin</code>, which replaces TowerBFT\'s tower file. set-identity requires that file by default, so <code>--require-tower</code> is no longer needed. <code>--do-not-require-vote-history</code> is for emergencies only: the primary is unreachable or corrupted, and the standby has caught up past the primary\'s last vote. Deleting a key file does not stop a running process from signing with the key it holds in memory. In practice these steps are scripted and the voting gap is a few seconds. With 200 ms slots, a manual gap of about 26 seconds already marks the validator delinquent, and a leader window that falls inside the gap becomes skip certificates.'),
   });
 
   S.registerScenario({
@@ -333,27 +353,27 @@
     tagline: LL('sol-1 停机两天后重新启动，服务显示 active，但它离链头越来越远。', 'sol-1 was restarted after two days offline. The service is active, but it keeps falling further behind.'),
     learn: [
       LL('用 solana catchup 判断节点在追赶还是在落后', 'Using solana catchup to tell catching up from falling behind'),
-      LL('长时间停机后为什么要用新快照启动', 'Why a node needs a fresh snapshot after a long outage'),
+      LL('200 ms 的 slot 下，停机两天意味着什么，以及为什么要用新快照启动', 'What two days offline means at 200 ms slots, and why the node needs a fresh snapshot'),
       LL('哪些 ledger 文件可以动，哪些不能动', 'Which ledger files may be touched and which may not'),
     ],
     brief: LL(
-      `<p>sol-1 停机两天，机房更换了一根故障内存条。同事在 08:05 UTC 重新启动了 agave-validator，然后去开会了。</p><p>现在是 08:30，验证者仍然 delinquent：<code>SolanaValidatorDelinquent</code>、<code>SolanaVoteInactive</code> 和 <code>SolanaSlotsSeverelyBehind</code> 都在响，但 systemd 显示服务是 active。同事留言："它在追块，给它点时间。如果一会儿还是红的，就把 sol-backup 启动起来。"</p><p>请让 sol-1 恢复投票。</p>`,
-      `<p>sol-1 was offline for two days while the data centre replaced a faulty memory module. A colleague started agave-validator again at 08:05 UTC and went into a meeting.</p><p>It is now 08:30 and the validator is still delinquent: <code>SolanaValidatorDelinquent</code>, <code>SolanaVoteInactive</code> and <code>SolanaSlotsSeverelyBehind</code> are firing, while systemd reports the service as active. The colleague left a message: "It's catching up, give it time. If it's still red later, start sol-backup."</p><p>Get sol-1 voting again.</p>`),
-    startAt: '2026-11-03T08:30:00Z', alertAge: 1200,
-    config: { balance: 14, burnPerDay: 2.1, snapshots: true, credits: 0, staleRestart: { downFor: 2 * 86400 + 1800, restartedAgo: 1500 } },
+      `<p>sol-1 停机两天，机房更换了一根故障内存条。同事在 08:05 UTC 重新启动了 agave-validator，然后去开会了。</p><p>现在是 08:30，验证者仍然 delinquent：<code>SolanaValidatorDelinquent</code>、<code>SolanaVoteInactive</code> 和 <code>SolanaSlotsSeverelyBehind</code> 都在响，<code>SolanaSkipRateHigh</code> 也报了警告，但 systemd 显示服务是 active。vote account 余额充足，验证者仍在验证者集合中。同事留言："它在追块，给它点时间。如果一会儿还是红的，就把 sol-backup 启动起来。"</p><p>请让 sol-1 恢复投票。</p>`,
+      `<p>sol-1 was offline for two days while the data centre replaced a faulty memory module. A colleague started agave-validator again at 08:05 UTC and went into a meeting.</p><p>It is now 08:30 and the validator is still delinquent: <code>SolanaValidatorDelinquent</code>, <code>SolanaVoteInactive</code> and <code>SolanaSlotsSeverelyBehind</code> are firing, and <code>SolanaSkipRateHigh</code> has raised a warning, while systemd reports the service as active. The vote account is well funded, so the validator is still in the validator set. The colleague left a message: "It's catching up, give it time. If it's still red later, start sol-backup."</p><p>Get sol-1 voting again.</p>`),
+    startAt: '2026-11-24T08:30:00Z', alertAge: 1200,
+    config: { balance: 14, voteBalance: 6.4, epoch: 1140, toBoundary: 0.6 * 86400, snapshots: true, credits: 0, staleRestart: { downFor: 2 * 86400 + 1800, restartedAgo: 1500 } },
     objectives: [
       { text: LL('sol-1 在投票，验证者没有 delinquent', 'sol-1 is voting and the validator is not delinquent'), check: w => SH().isVoting(w, w.nodes['sol-1']) && !SH().delinquent(w) },
       { text: LL('恢复后用链上数据确认一次（solana catchup、validators 或 vote-account）', 'Once it recovers, confirm from on-chain data (solana catchup, validators or vote-account)'), check: w => w.flags.verified !== undefined },
     ],
     forbidden: [
       { flag: 'double_sign', text: LL('让两台机器同时使用质押 identity（sol-backup 的 unit 配置的是同一个质押 identity）', 'Running the staked identity on two machines at once (sol-backup\'s unit is configured with the same staked identity)') },
-      { flag: 'wipe_ledger', text: LL('删除 ledger 中的 rocksdb、accounts 或 tower 文件', 'Deleting rocksdb, accounts or tower files from the ledger') },
+      { flag: 'wipe_ledger', text: LL('删除 ledger 中的 rocksdb、accounts 或 vote history 文件', 'Deleting rocksdb, accounts or the vote history file from the ledger') },
     ],
     hints: [
       LL('<code>ssm sol-1</code>、<code>sudo -i</code>、<code>solana catchup --our-localhost</code>。看清楚它是在追赶（gaining），还是在落后（falling behind）。', '<code>ssm sol-1</code>, <code>sudo -i</code>, <code>solana catchup --our-localhost</code>. Note whether it is gaining or falling behind.'),
       LL('<code>journalctl -u agave-validator -n 30 --no-pager</code> 和 <code>systemctl cat agave-validator</code>。注意它加载的快照来自哪个 slot，以及是哪个参数让它没有去找更新的快照。', '<code>journalctl -u agave-validator -n 30 --no-pager</code> and <code>systemctl cat agave-validator</code>. Note the slot of the snapshot it loaded, and the flag that kept it from looking for a newer one.'),
-      LL('停机两天的节点，没法靠从其他节点修复（repair）缺失的 slot 追上来，需要一个新的快照。去掉 <code>--no-snapshot-fetch</code>：<code>sed -i \'s/ --no-snapshot-fetch//\' /etc/systemd/system/agave-validator.service</code>，<code>systemctl daemon-reload</code>，<code>systemctl restart agave-validator</code>。', 'A node that was down for two days cannot catch up by repairing the missing slots from peers. It needs a fresh snapshot. Remove <code>--no-snapshot-fetch</code>: <code>sed -i \'s/ --no-snapshot-fetch//\' /etc/systemd/system/agave-validator.service</code>, <code>systemctl daemon-reload</code>, <code>systemctl restart agave-validator</code>.'),
-      LL('节点会从 known validator 下载快照、加载，然后在几分钟内追上。用 <code>agave-validator -l /mnt/ledger monitor</code> 观察，最后用 <code>solana catchup --our-localhost</code> 确认。不要动 rocksdb、accounts 和 tower 文件，也不要启动 sol-backup。', 'The node downloads a snapshot from a known validator, loads it, and catches up within a few minutes. Watch with <code>agave-validator -l /mnt/ledger monitor</code>, then confirm with <code>solana catchup --our-localhost</code>. Leave rocksdb, accounts and the tower file alone, and do not start sol-backup.'),
+      LL('200 ms 的 slot 下，两天约 864,000 个 slot，整整两个 epoch。这么大的差距没法靠从其他节点修复（repair）缺失的 slot 补回来，需要一个新的快照。去掉 <code>--no-snapshot-fetch</code>：<code>sed -i \'s/ --no-snapshot-fetch//\' /etc/systemd/system/agave-validator.service</code>，<code>systemctl daemon-reload</code>，<code>systemctl restart agave-validator</code>。', 'At 200 ms slots, two days is about 864,000 slots, two whole epochs. A gap that size cannot be closed by repairing the missing slots from peers. The node needs a fresh snapshot. Remove <code>--no-snapshot-fetch</code>: <code>sed -i \'s/ --no-snapshot-fetch//\' /etc/systemd/system/agave-validator.service</code>, <code>systemctl daemon-reload</code>, <code>systemctl restart agave-validator</code>.'),
+      LL('节点会从 known validator 下载快照、加载，然后在几分钟内追上。用 <code>agave-validator -l /mnt/ledger monitor</code> 观察，最后用 <code>solana catchup --our-localhost</code> 确认。不要动 rocksdb、accounts 和 vote history 文件，也不要启动 sol-backup。', 'The node downloads a snapshot from a known validator, loads it, and catches up within a few minutes. Watch with <code>agave-validator -l /mnt/ledger monitor</code>, then confirm with <code>solana catchup --our-localhost</code>. Leave rocksdb, accounts and the vote history file alone, and do not start sol-backup.'),
     ],
     limit: 3 * 3600, holdFor: 60,
     score: w => {
@@ -363,7 +383,7 @@
       ];
     },
     debrief: LL(
-      '长时间停机后，带着 <code>--no-snapshot-fetch</code> 重启的验证者，会加载自己最后一个本地快照。从那以后的每个 slot 都要重放，而 blockstore 里没有的 slot 只能从其他节点修复（repair）。修复的速度比集群出块慢，所以差距越拉越大，systemd 却一直显示 active。解决办法是从 known validator 下载一个新快照。<code>--no-snapshot-fetch</code> 适合短暂的重启；停机很久之后，它会把节点困在过去。按同事的建议启动备用机也解决不了问题：sol-1 一旦追上，两台机器就会用同一把密钥投票。这里的告警时间线与常见的生产规则一致：停投约 51 秒后链上标记 delinquent，SolanaValidatorDelinquent 在 5 分钟后触发，落后超过 1,500 个 slot 后 SolanaSlotsSeverelyBehind 触发。如果监控只检查进程是否在运行，一个停投的验证者可能连续几个 epoch 拿不到奖励而无人察觉。这就是奖励流告警存在的原因：它们比较本 epoch 的 credits 与集群中位数，并检查上一个 epoch 的奖励是否到账。',
-      'A validator restarted after a long outage with <code>--no-snapshot-fetch</code> loads its last local snapshot. Every slot since then has to be replayed, and slots the blockstore never received must be repaired from peers. Repair is slower than the cluster produces slots, so the gap keeps growing while systemd shows the service as active. The fix is a fresh snapshot from a known validator. <code>--no-snapshot-fetch</code> suits short restarts; after a long outage it keeps the node stuck in the past. Starting the standby, as the colleague suggested, would not have helped: as soon as sol-1 caught up, two machines would vote with one key. The alert timeline here matches common production rules: the chain marks a validator delinquent about 51 seconds after it stops voting, SolanaValidatorDelinquent fires 5 minutes later, and SolanaSlotsSeverelyBehind fires once the gap passes 1,500 slots. If monitoring only checks that the process is running, a stalled validator can lose rewards for several epochs before anyone notices. That is why rewards-flow alerts exist: they compare this epoch\'s credits with the cluster median, and check that the last epoch\'s rewards arrived.'),
+      '长时间停机后，带着 <code>--no-snapshot-fetch</code> 重启的验证者，会加载自己最后一个本地快照。从那以后的每个 slot 都要重放，而 blockstore 里没有的 slot 只能从其他节点修复（repair）。修复的速度比集群出块慢，所以差距越拉越大，systemd 却一直显示 active。slot 缩短到 200 ms 之后，同样的停机时间对应的 slot 数翻了一倍：两天约 864,000 个 slot，整整两个 epoch；<code>--maximum-local-snapshot-age</code> 默认的 2,500 个 slot 只相当于 8 分钟多一点。解决办法是从 known validator 下载一个新快照。<code>--no-snapshot-fetch</code> 适合短暂的重启；停机很久之后，它会把节点困在过去。按同事的建议启动备用机也解决不了问题：sol-1 一旦追上，两台机器就会用同一把密钥投票。这里的告警时间线与常见的生产规则一致：停投约 26 秒（128 个 slot）后链上标记 delinquent，SolanaValidatorDelinquent 在 5 分钟后触发，落后超过 1,500 个 slot（约 5 分钟）后 SolanaSlotsSeverelyBehind 触发。停机期间，这台验证者的每个 leader 窗口都很快变成了 skip 证书，链没有停，但本 epoch 的 skip rate 已经无法挽回。vote account 一直有钱，所以验证者没有失去席位，损失的是这两个 epoch 的投票和出块。如果监控只检查进程是否在运行，一个停投的验证者可能连续几个 epoch 拿不到奖励而无人察觉。这就是奖励流告警存在的原因：它们比较本 epoch 的 credits 与集群中位数，并检查上一个 epoch 的奖励是否到账。',
+      'A validator restarted after a long outage with <code>--no-snapshot-fetch</code> loads its last local snapshot. Every slot since then has to be replayed, and slots the blockstore never received must be repaired from peers. Repair is slower than the cluster produces slots, so the gap keeps growing while systemd shows the service as active. With slots cut to 200 ms, the same outage spans twice as many slots: two days is about 864,000 slots, two whole epochs, and the default <code>--maximum-local-snapshot-age</code> of 2,500 slots is just over 8 minutes. The fix is a fresh snapshot from a known validator. <code>--no-snapshot-fetch</code> suits short restarts; after a long outage it keeps the node stuck in the past. Starting the standby, as the colleague suggested, would not have helped: as soon as sol-1 caught up, two machines would vote with one key. The alert timeline here matches common production rules: the chain marks a validator delinquent about 26 seconds (128 slots) after it stops voting, SolanaValidatorDelinquent fires 5 minutes later, and SolanaSlotsSeverelyBehind fires once the gap passes 1,500 slots, about 5 minutes. During the outage each of this validator\'s leader windows quickly became skip certificates. The chain did not stall, but the skip rate for this epoch cannot be recovered. The vote account stayed funded, so the validator kept its place in the set; the outage cost two epochs of votes and blocks. If monitoring only checks that the process is running, a stalled validator can lose rewards for several epochs before anyone notices. That is why rewards-flow alerts exist: they compare this epoch\'s credits with the cluster median, and check that the last epoch\'s rewards arrived.'),
   });
 })(SIM);

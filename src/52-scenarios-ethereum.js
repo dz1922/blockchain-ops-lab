@@ -10,6 +10,11 @@
   const VC_ID = 'c4a81f2e-6b9d-4e3a-8f7c-5d2b1a0e9c36';
   const PK = '0x8a1f3c5e7b9d2f4a6c8e0b1d3f5a7c9e1b3d5f7a9c0e2b4d6f8a1c3e5b7d9f0a2c4e6b8d0f1a3c5e7b9d2f4a6c8e0b1d';
   const BEARER = `/mnt/ethereum-data/stereum/teku-${VC_ID}/data/validator/key-manager/validator-api-bearer`;
+  const SVC = `/etc/stereum/services/${BEACON_ID}.yaml`;
+  const EL_ID = '3f6c2a10-8d4e-4b7a-9c1d-2e5f7a9b0c14';
+  const KSF = 'keystore-m_12381_3600_0_0_0-1739518246';
+  const BLOCKNUM = `curl -s -X POST -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' localhost:8545`;
+  const KEYS = 'curl -sk https://127.0.0.1:5052/eth/v1/keystores -H "Authorization: Bearer $TOKEN"';
 
   const elMoving = (w, n) => H().ready(w, n.eth.c.el) && w.t - n.eth.elLastAdv < 60;
   const inSync = (w, n) => { const V = H().view(w, n); return V.clUp && !V.syncing && !V.elOffline; };
@@ -66,10 +71,45 @@
       { flag: 'wipe_db', text: LL('删除客户端数据库', 'Deleting a client database') },
     ],
     hints: [
-      LL('<code>ssm eth-02</code>、<code>sudo -i</code>、<code>systemctl status besu teku-beacon teku-vc</code>。三个服务都是 active。再问 Besu 当前高度：<code>curl -s -X POST -H \'Content-Type: application/json\' -d \'{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}\' localhost:8545</code>，隔一分钟再问一次。', '<code>ssm eth-02</code>, <code>sudo -i</code>, <code>systemctl status besu teku-beacon teku-vc</code>. All three are active. Ask Besu for its height: <code>curl -s -X POST -H \'Content-Type: application/json\' -d \'{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}\' localhost:8545</code>, and again a minute later.'),
-      LL('<code>journalctl -u besu -n 20 --no-pager</code> 里的 <code>Execution engine not called in 120 seconds</code> 表示 beacon 节点不再调用 Besu。去问 beacon：<code>curl -sS localhost:5051/eth/v1/node/syncing</code>，再看 <code>journalctl -u teku-beacon -n 5 --no-pager</code> 最后一行的时间。', '<code>Execution engine not called in 120 seconds</code> in <code>journalctl -u besu -n 20 --no-pager</code> means the beacon node has stopped calling Besu. Ask the beacon: <code>curl -sS localhost:5051/eth/v1/node/syncing</code>, and check the time of the last line in <code>journalctl -u teku-beacon -n 5 --no-pager</code>.'),
-      LL('beacon 进程还在，却不应答，50 分钟没写一行日志：它挂起了。<code>systemctl restart teku-beacon</code>。重启 beacon 不会导致罚没。不要动 teku-vc。', 'The beacon process is alive, does not answer, and has not logged a line in 50 minutes: it is hung. <code>systemctl restart teku-beacon</code>. Restarting the beacon is slashing-safe. Leave teku-vc alone.'),
-      LL('重新打开看门狗：<code>systemctl enable --now eth-engine-watchdog.timer</code>，用 <code>systemctl list-timers</code> 确认。追赶进度：<code>curl -s localhost:5051/eth/v1/node/syncing | jq .data</code>。', 'Turn the watchdog back on: <code>systemctl enable --now eth-engine-watchdog.timer</code>, and confirm with <code>systemctl list-timers</code>. Follow the catch-up with <code>curl -s localhost:5051/eth/v1/node/syncing | jq .data</code>.'),
+      {
+        text: LL('登录 eth-02，确认告警，让值班电话停下来。先看三个服务是否都在运行，再问 Besu 当前的区块高度。',
+          'Log in to eth-02 and acknowledge the page so the phones stop. Check that the three services are running, then ask Besu for its block number.'),
+        cmds: ['ssm eth-02', 'sudo -i', 'ack EthExecutionStalled', 'systemctl status besu teku-beacon teku-vc', BLOCKNUM],
+        wait: 60,
+      },
+      {
+        text: LL('一分钟后再问一次，高度没有变。Besu 的日志说明了原因：<code>Execution engine not called in 120 seconds</code> 表示 beacon 节点不再通过 Engine API 调用它。',
+          'Ask again a minute later: the block number has not moved. Besu\'s log says why: <code>Execution engine not called in 120 seconds</code> means the beacon node has stopped calling it over the Engine API.'),
+        cmds: [BLOCKNUM, 'journalctl -u besu -n 20 --no-pager'],
+      },
+      {
+        text: LL('去问 beacon 节点。它不应答，最后一行日志停在 50 分钟前，systemd 却仍然显示 active：进程没有退出，而是挂起了。',
+          'Ask the beacon node. It does not answer, and its last log line is 50 minutes old, yet systemd still reports it active: the process has not exited, it is hung.'),
+        cmds: ['curl -sS localhost:5051/eth/v1/node/syncing', 'journalctl -u teku-beacon -n 5 --no-pager', 'systemctl status teku-beacon'],
+      },
+      {
+        text: LL('只重启 beacon 节点，这不会导致罚没。不要动 teku-vc：故障不在它那里，而且开启 doppelganger 检测时，每次重启它都会损失两个 epoch 的任务。',
+          'Restart the beacon node only; that is slashing-safe. Leave teku-vc alone: the fault is not there, and with doppelganger detection every restart of it costs two epochs of duties.'),
+        cmds: ['systemctl restart teku-beacon', 'systemctl status teku-beacon'],
+        wait: 60,
+      },
+      {
+        text: LL('重新打开引擎看门狗。它在 10-03 维护时被停掉，之后一直没有运行，所以这次挂起没有被自动恢复。',
+          'Turn the engine watchdog back on. It was stopped for the 10-03 maintenance and never restarted, which is why nothing recovered this hang automatically.'),
+        cmds: ['systemctl status eth-engine-watchdog.timer', 'systemctl enable --now eth-engine-watchdog.timer', 'systemctl list-timers'],
+      },
+      {
+        text: LL('观察追赶。beacon 节点落后约 250 个 slot，需要几分钟；它一开始把区块交给 Besu，Besu 就重新导入。',
+          'Follow the catch-up. The beacon node is about 250 slots behind and needs a few minutes; Besu imports again as soon as the beacon hands it blocks.'),
+        cmds: ['curl -s localhost:5051/eth/v1/node/syncing | jq .data', 'journalctl -u besu -n 5 --no-pager'],
+        wait: 120,
+      },
+      {
+        text: LL('确认恢复：beacon 节点已同步，Besu 的高度在增长，验证者的证明重新被打包。',
+          'Confirm the recovery: the beacon node is in sync, Besu\'s block number advances, and the validator\'s attestations are included again.'),
+        cmds: ['curl -s localhost:5051/eth/v1/node/syncing | jq .data', BLOCKNUM, 'journalctl -u teku-vc -n 5 --no-pager', 'curl -s https://beaconcha.in/api/v1/validator/1234567/attestations | jq .data[0]'],
+        wait: 300,
+      },
     ],
     limit: 3 * 3600, holdFor: 60,
     score,
@@ -139,10 +179,44 @@
       { flag: 'vc_restart', text: LL('重启、停止或重建验证者客户端容器（钥匙在它那里，故障在 beacon 节点）', 'Restarting, stopping or recreating the validator client container (it holds the key, and the fault is in the beacon node)') },
     ],
     hints: [
-      LL('<code>ssm eth-01</code>、<code>sudo -i</code>，然后按运维手册排查：<code>docker ps -a --format \'table {{.Names}}\\t{{.Status}}\\t{{.Image}}\'</code>。运行时间很短或显示 Restarting，就是在反复重启。找出 beacon 容器：<code>BEACON=$(docker ps -a --format \'{{.Names}} {{.Image}} {{.Command}}\' | awk \'/teku/ &amp;&amp; !/vc/{print $1; exit}\')</code>。', '<code>ssm eth-01</code>, <code>sudo -i</code>, then the runbook triage: <code>docker ps -a --format \'table {{.Names}}\\t{{.Status}}\\t{{.Image}}\'</code>. A very short uptime or "Restarting" means restarts. Find the beacon container: <code>BEACON=$(docker ps -a --format \'{{.Names}} {{.Image}} {{.Command}}\' | awk \'/teku/ &amp;&amp; !/vc/{print $1; exit}\')</code>.'),
-      LL('<code>docker logs --tail 20 $BEACON</code> 说明了它为什么退出。<code>docker inspect $BEACON --format \'created={{.Created}} restarts={{.RestartCount}} image={{.Config.Image}}\'</code> 和 <code>cat /var/log/stereum-update.log</code> 说明了午夜改了什么。', '<code>docker logs --tail 20 $BEACON</code> shows why it exits. <code>docker inspect $BEACON --format \'created={{.Created}} restarts={{.RestartCount}} image={{.Config.Image}}\'</code> and <code>cat /var/log/stereum-update.log</code> show what changed at midnight.'),
-      LL(`Teku 26.7.0 默认在 UDP 9001 上启用 QUIC，而这台节点用的是 <code>--p2p-port=9001</code>。在服务定义里给 QUIC 指定另一个端口：<code>echo '  - --p2p-quic-port=9002' &gt;&gt; /etc/stereum/services/${BEACON_ID}.yaml</code>（command 列表是文件的最后一段），再用 <code>tail -5</code> 检查。`, `Teku 26.7.0 enables QUIC on UDP 9001 by default, and this node runs <code>--p2p-port=9001</code>. Give QUIC another port in the service definition: <code>echo '  - --p2p-quic-port=9002' &gt;&gt; /etc/stereum/services/${BEACON_ID}.yaml</code> (the command list is the last block of the file), then check it with <code>tail -5</code>.`),
-      LL(`<code>docker restart</code> 仍然使用旧参数。按服务定义重建容器：<code>stereum-recreate ${BEACON_ID}</code>。之后观察追赶：<code>curl -s localhost:5051/eth/v1/node/syncing | jq .data</code>。大约需要 20 分钟，期间各种落后告警会一起出现，确认（Ack）它们即可，不要重启任何东西。`, `<code>docker restart</code> keeps the old arguments. Recreate the container from the service definition: <code>stereum-recreate ${BEACON_ID}</code>. Then follow the catch-up: <code>curl -s localhost:5051/eth/v1/node/syncing | jq .data</code>. It takes about 20 minutes. The lag alerts fire together meanwhile; acknowledge them and do not restart anything.`),
+      {
+        text: LL('登录 eth-01，确认正在告警的三个 critical 告警。然后按运维手册看容器：运行时间很短或显示 Restarting，就是在反复重启。',
+          'Log in to eth-01 and acknowledge the three critical alerts that are firing. Then follow the runbook and list the containers: a very short uptime or "Restarting" means a restart loop.'),
+        cmds: ['ssm eth-01', 'sudo -i', 'ack EthHeadSlotStalled', 'ack EthExecutionStalled', 'ack EthValidatorEfficiencyLow', "docker ps -a --format 'table {{.Names}}\\t{{.Status}}\\t{{.Image}}'"],
+      },
+      {
+        text: LL('找出 beacon 容器，读它退出前的日志，再看它是什么时候、用哪个镜像创建的，以及午夜的自动更新改了什么。',
+          'Find the beacon container and read its log up to the exit. Then see when and from which image it was created, and what the midnight update changed.'),
+        cmds: [
+          "BEACON=$(docker ps -a --format '{{.Names}} {{.Image}} {{.Command}}' | awk '/teku/ && !/vc/{print $1; exit}'); echo $BEACON",
+          'docker logs --tail 20 $BEACON',
+          "docker inspect $BEACON --format 'created={{.Created}} restarts={{.RestartCount}} image={{.Config.Image}}'",
+          'cat /var/log/stereum-update.log',
+        ],
+      },
+      {
+        text: LL('Teku 26.7.0 默认在 UDP 9001 上启用 QUIC，而这台节点用 <code>--p2p-port=9001</code>，discovery 因此绑定失败。在服务定义里给 QUIC 另一个端口，自动更新按这个文件重建容器，修复才能保留下来。command 列表是文件的最后一段。',
+          'Teku 26.7.0 enables QUIC on UDP 9001 by default, and this node runs <code>--p2p-port=9001</code>, so discovery fails to bind. Give QUIC another port in the service definition: the updater recreates the container from this file, so the fix survives. The command list is the last block of the file.'),
+        cmds: [`grep -n p2p ${SVC}`, `echo '  - --p2p-quic-port=9002' >> ${SVC}`, `tail -5 ${SVC}`],
+      },
+      {
+        text: LL('<code>docker restart</code> 仍然使用旧参数。按服务定义重建 beacon 容器，然后看它的启动日志里 QUIC 用的是哪个端口。',
+          '<code>docker restart</code> keeps the old arguments. Recreate the beacon container from its service definition, then check in its startup log which port QUIC uses.'),
+        cmds: [`stereum-recreate ${BEACON_ID}`, `docker logs --tail 5 stereum-${BEACON_ID}`],
+        wait: 480,
+      },
+      {
+        text: LL('确认 beacon 容器这几分钟一直在运行，没有再重启。它落后约 8 小时，追赶需要 20 分钟左右。这段时间里落后告警会出现，确认它们即可，不要重启任何东西。',
+          'Check that the beacon container has stayed up for the last few minutes without restarting. It is about 8 hours behind and needs around 20 minutes to catch up. Lag alerts fire meanwhile; acknowledge them and do not restart anything.'),
+        cmds: ["docker ps --format 'table {{.Names}}\\t{{.Status}}'", 'curl -s localhost:5051/eth/v1/node/syncing | jq .data', 'ack EthBeaconSlotsSignificantlyBehind'],
+        wait: 900,
+      },
+      {
+        text: LL('确认恢复：beacon 节点已同步，Besu 在导入区块，验证者的证明重新被打包。',
+          'Confirm the recovery: the beacon node is in sync, Besu imports blocks, and the validator\'s attestations are included again.'),
+        cmds: ['curl -s localhost:5051/eth/v1/node/syncing | jq .data', `docker logs --tail 5 stereum-${EL_ID}`, 'curl -s https://beaconcha.in/api/v1/validator/1234567/attestations | jq .data[0]'],
+        wait: 300,
+      },
     ],
     limit: 5 * 3600, holdFor: 60,
     score,
@@ -173,7 +247,7 @@
       ],
     },
     setup(w) {
-      const n = w.nodes['eth-02'], v = H().val(w), f = 'keystore-m_12381_3600_0_0_0-1739518246';
+      const n = w.nodes['eth-02'], v = H().val(w), f = KSF;
       const ks = S.fsRead(w, w.nodes['eth-01'], `/mnt/ethereum-data/stereum/teku-${VC_ID}/data/validator/key-manager/local/${PK}.json`);
       S.fsWrite(n, `/root/migration/${f}.json`, ks, { mode: '600', owner: 'root' });
       S.fsWrite(n, `/root/migration/${f}.txt`, H().hx('pw' + v.pubkey, 40) + '\n', { mode: '600', owner: 'root' });
@@ -191,10 +265,44 @@
       { flag: 'no_interchange', text: LL('在导入 eth-01 的 slashing 保护记录之前，就在 eth-02 上启用这把钥匙', 'Starting the key on eth-02 before importing eth-01\'s slashing protection history') },
     ],
     hints: [
-      LL(`先读 <code>cat ~/NOTES.md</code>。在 eth-01 上（<code>ssm eth-01</code>、<code>sudo -i</code>）查看验证者客户端持有的钥匙：<code>TOKEN=$(cat ${BEARER})</code>，然后 <code>curl -sk https://127.0.0.1:5052/eth/v1/keystores -H "Authorization: Bearer $TOKEN"</code>。`, `Read <code>cat ~/NOTES.md</code> first. On eth-01 (<code>ssm eth-01</code>, <code>sudo -i</code>) list the keys its validator client holds: <code>TOKEN=$(cat ${BEARER})</code>, then <code>curl -sk https://127.0.0.1:5052/eth/v1/keystores -H "Authorization: Bearer $TOKEN"</code>.`),
-      LL(`一步完成"停止签名"和"导出记录"：<code>curl -sk -X DELETE https://127.0.0.1:5052/eth/v1/keystores -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"pubkeys":["${PK}"]}' &gt; /tmp/delete.json</code>，然后 <code>jq -r .slashing_protection /tmp/delete.json &gt; /tmp/slashing-protection.json</code>，再 <code>aws s3 cp /tmp/slashing-protection.json s3://example-eth-ops/migration/</code>。`, `Stop signing and export the history in one step: <code>curl -sk -X DELETE https://127.0.0.1:5052/eth/v1/keystores -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"pubkeys":["${PK}"]}' &gt; /tmp/delete.json</code>, then <code>jq -r .slashing_protection /tmp/delete.json &gt; /tmp/slashing-protection.json</code>, then <code>aws s3 cp /tmp/slashing-protection.json s3://example-eth-ops/migration/</code>.`),
-      LL('在 eth-02 上：<code>aws s3 cp s3://example-eth-ops/migration/slashing-protection.json /tmp/</code>，然后 <code>teku slashing-protection import --data-path=/var/lib/teku-vc --from=/tmp/slashing-protection.json</code>。', 'On eth-02: <code>aws s3 cp s3://example-eth-ops/migration/slashing-protection.json /tmp/</code>, then <code>teku slashing-protection import --data-path=/var/lib/teku-vc --from=/tmp/slashing-protection.json</code>.'),
-      LL('导入之后才放钥匙：把 <code>ls /root/migration</code> 里的两个文件复制到 <code>/var/lib/teku-vc/validator-keys/</code>，然后 <code>systemctl restart teku-vc</code>。doppelganger 检测会先等两到三个 epoch，可以用 <code>journalctl -u teku-vc -f</code> 观察。', 'Only after the import, load the key: copy both files from <code>ls /root/migration</code> into <code>/var/lib/teku-vc/validator-keys/</code>, then <code>systemctl restart teku-vc</code>. Doppelganger detection waits two to three epochs first; watch it with <code>journalctl -u teku-vc -f</code>.'),
+      {
+        text: LL('先读迁移笔记。然后登录 eth-01，用 Keymanager API 列出它的验证者客户端持有的钥匙。',
+          'Read the migration notes first. Then log in to eth-01 and list the keys its validator client holds through the Keymanager API.'),
+        cmds: ['cat ~/NOTES.md', 'ssm eth-01', 'sudo -i', `TOKEN=$(cat ${BEARER})`, KEYS],
+      },
+      {
+        text: LL('用 Keymanager API 删除这把钥匙。这一个调用既停止签名、删掉磁盘上的 keystore，又返回 slashing 保护记录。把记录存下来，通过 S3 传给 eth-02。',
+          'Delete the key through the Keymanager API. This one call stops signing, removes the keystore from disk, and returns the slashing protection history. Save the history and send it to eth-02 through S3.'),
+        cmds: [
+          `TOKEN=$(cat ${BEARER})`,
+          `curl -sk -X DELETE https://127.0.0.1:5052/eth/v1/keystores -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"pubkeys":["${PK}"]}' > /tmp/delete.json`,
+          'jq .data /tmp/delete.json',
+          'jq -r .slashing_protection /tmp/delete.json > /tmp/slashing-protection.json',
+          'aws s3 cp /tmp/slashing-protection.json s3://example-eth-ops/migration/',
+        ],
+      },
+      {
+        text: LL('确认 eth-01 不再持有这把钥匙：API 的列表里没有它，磁盘上也没有。只停容器不够，午夜的自动更新会按服务定义重建容器，带着钥匙重新签名。',
+          'Confirm that eth-01 no longer holds the key, neither in the API\'s list nor on disk. Stopping the container is not enough: the midnight update recreates it from its service definition, and it signs again with the key.'),
+        cmds: [`TOKEN=$(cat ${BEARER})`, KEYS, `ls /mnt/ethereum-data/stereum/teku-${VC_ID}/data/validator/key-manager/local/`, 'exit', 'exit'],
+      },
+      {
+        text: LL('在 eth-02 上，先把 eth-01 的签名记录导入 teku-vc 的 slashing 保护数据库，再碰钥匙。',
+          'On eth-02, import eth-01\'s signing history into teku-vc\'s slashing protection database before touching the key.'),
+        cmds: ['ssm eth-02', 'sudo -i', 'aws s3 cp s3://example-eth-ops/migration/slashing-protection.json /tmp/', 'teku slashing-protection import --data-path=/var/lib/teku-vc --from=/tmp/slashing-protection.json'],
+      },
+      {
+        text: LL('导入之后才放钥匙：把 keystore 和密码文件复制到钥匙目录，重启 teku-vc。doppelganger 检测会先观察两到三个 epoch，确认网络上没有别人在用这把钥匙签名。',
+          'Only after the import, load the key: copy the keystore and its password file into the key directory and restart teku-vc. Doppelganger detection first watches for two to three epochs to make sure nobody else on the network signs with this key.'),
+        cmds: ['ls /root/migration', `cp /root/migration/${KSF}.json /root/migration/${KSF}.txt /var/lib/teku-vc/validator-keys/`, 'systemctl restart teku-vc', 'journalctl -u teku-vc -n 10 --no-pager'],
+        wait: 1080,
+      },
+      {
+        text: LL('确认验证者从 eth-02 出证明，并且证明被按时打包。',
+          'Confirm that the validator attests from eth-02 and that its attestations are included on time.'),
+        cmds: ['journalctl -u teku-vc -n 5 --no-pager', 'curl -s localhost:5051/eth/v1/beacon/states/head/validators/1234567 | jq .data.status', 'curl -s https://beaconcha.in/api/v1/validator/1234567/attestations | jq .data[0]'],
+        wait: 600,
+      },
     ],
     limit: 4 * 3600, holdFor: 60,
     score: w => {

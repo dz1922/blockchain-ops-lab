@@ -48,10 +48,28 @@
     objectives: allUpgradedHealthy,
     forbidden: avxForbidden,
     hints: [
-      LL('先了解现状：<code>gh pr list</code>，然后 <code>gh pr view 477</code>。注意截止时间。', 'Start with the situation: <code>gh pr list</code>, then <code>gh pr view 477</code>. Note the deadline.'),
-      LL('合并 PR 就是批准升级：<code>gh pr merge 477</code> 会启动 upgrade-apply，每次升级两台。也可以逐台执行 <code>staking --region us-west-2 upgrade avalanche --env prod --moniker avax-02 --version 1.15.0</code>。', 'Merging the PR approves the upgrade: <code>gh pr merge 477</code> starts upgrade-apply, two nodes at a time. You can also upgrade one node with <code>staking --region us-west-2 upgrade avalanche --env prod --moniker avax-02 --version 1.15.0</code>.'),
-      LL('升级后的节点要重放约 13,000 个区块，这段时间 health 会报告不健康。可以登录节点观察：<code>ssm avax-01</code>、<code>sudo -i</code>、<code>journalctl -u avalanchego -f</code>。把模拟时钟调到 60× 会快一些。', 'An upgraded node replays about 13,000 blocks, and health reports unhealthy meanwhile. Watch it on the node: <code>ssm avax-01</code>, <code>sudo -i</code>, <code>journalctl -u avalanchego -f</code>. Setting the clock to 60× helps.'),
-      LL('不要把 <code>avalanchego.prev</code> 复制回去。数据库已经迁移，旧版本会以 unknown codec version 退出。', 'Do not copy <code>avalanchego.prev</code> back. The database has migrated and the old binary exits with unknown codec version.'),
+      {
+        text: LL('先读升级 PR，记下离激活还有多久。', 'Read the upgrade pull request and note how long is left before activation.'),
+        cmds: ['gh pr list', 'gh pr view 477'],
+      },
+      {
+        text: LL('登录一台节点，确认它现在的版本。日志里已经有即将升级的警告。', 'Log in to one node and confirm what it runs now. The log already warns about the coming upgrade.'),
+        cmds: ['ssm avax-01', 'sudo -i', 'avalanchego --version', 'journalctl -u avalanchego -n 20 --no-pager', 'exit', 'exit'],
+      },
+      {
+        text: LL('合并 PR 就是批准升级。upgrade-apply 随即开始，每次升级两台，进度显示在右侧的事件记录里。', 'Merging the pull request approves the upgrade. upgrade-apply starts at once, two nodes at a time, and reports progress in the event log.'),
+        cmds: ['gh pr merge 477'],
+        wait: 300,
+      },
+      {
+        text: LL('升级后的节点要重放约 13,000 个区块，这段时间 health 报告不健康。这是正常的恢复过程，不是失败。不要把 <code>avalanchego.prev</code> 放回去：数据库已经迁移，旧版本会以 unknown codec version 退出。', 'An upgraded node replays about 13,000 blocks, and health reports unhealthy until it finishes. That is recovery, not failure. Do not put <code>avalanchego.prev</code> back: the database has migrated, and the old binary exits with unknown codec version.'),
+        cmds: ['ssm avax-01', 'sudo -i', 'avalanchego --version', 'systemctl status avalanchego', 'journalctl -u avalanchego -n 20 --no-pager', 'curl -s localhost:9650/ext/health | jq .healthy', 'exit', 'exit'],
+        wait: 1500,
+      },
+      {
+        text: LL('从独立视角确认三台验证者都重新连上了网络。', 'Confirm from an independent view that all three validators are connected again.'),
+        cmds: ['curl -s -X POST --data \'{"jsonrpc":"2.0","id":1,"method":"platform.getCurrentValidators","params":{}}\' https://api.avax.network/ext/bc/P | jq \'.result.validators[] | {nodeID, connected, uptime}\''],
+      },
     ],
     limit: 6 * 3600, holdFor: 60,
     score: avxScore,
@@ -77,10 +95,23 @@
     objectives: allUpgradedHealthy,
     forbidden: avxForbidden,
     hints: [
-      LL('登录任意一台：<code>ssm avax-02</code>、<code>sudo -i</code>、<code>systemctl status avalanchego</code>，再看 <code>journalctl -u avalanchego -n 30 --no-pager</code> 中的 FATAL。', 'Log in to any node: <code>ssm avax-02</code>, <code>sudo -i</code>, <code>systemctl status avalanchego</code>, then look for FATAL in <code>journalctl -u avalanchego -n 30 --no-pager</code>.'),
-      LL('<code>unknown codec version</code> 表示二进制比数据库旧。用 <code>avalanchego --version</code> 确认当前版本。', '<code>unknown codec version</code> means the binary is older than the database. Check with <code>avalanchego --version</code>.'),
-      LL('重新安装 1.15.0：在工作电脑上执行 <code>staking --region us-west-2 upgrade avalanche --env prod --moniker avax-02 --version 1.15.0</code>，或者在节点上下载发布包，用 <code>tar xzf</code> 解压后 <code>install</code> 到 /usr/local/bin/avalanchego。', 'Install 1.15.0 again: from the workstation run <code>staking --region us-west-2 upgrade avalanche --env prod --moniker avax-02 --version 1.15.0</code>, or on the node download the release, unpack it with <code>tar xzf</code> and <code>install</code> it to /usr/local/bin/avalanchego.'),
-      LL('不需要删除数据库。换上 1.15.0 之后，systemd 的下一次自动重启就会用现有数据恢复。三台节点分别在 us-west-2、us-east-1 和 us-west-1。', 'There is no need to delete the database. With 1.15.0 in place, the next automatic restart recovers from the existing data. The nodes are in us-west-2, us-east-1 and us-west-1.'),
+      {
+        text: LL('先确认告警，让电话停下来。然后登录一台节点，在日志里找服务反复退出的原因（FATAL 那一行）。', 'Acknowledge the alerts so the paging stops. Then log in to one node and find in the log why the service keeps exiting (the FATAL line).'),
+        cmds: ['ack AvalancheNodeUnhealthy', 'ack NodeDown', 'ack AvalancheValidatorNotConnected', 'ack ExternalProbeFailure', 'ssm avax-02', 'sudo -i', 'systemctl status avalanchego', 'journalctl -u avalanchego -n 30 --no-pager'],
+      },
+      {
+        text: LL('<code>unknown codec version</code> 表示二进制比数据库旧：数据库已经被 1.15.0 迁移，回滚又装回了 1.14.2。数据库不用删，换回新版本就行。', '<code>unknown codec version</code> means the binary is older than the database: 1.15.0 migrated the database, and the rollback put 1.14.2 back. The database does not need deleting; the binary needs to be new again.'),
+        cmds: ['avalanchego --version', 'ls -l /usr/local/bin'],
+      },
+      {
+        text: LL('你已经在 avax-02 上，直接在这里装回 1.15.0。不需要手动重启：systemd 的下一次自动重启就会用新版本和现有数据启动。', 'You are already on avax-02, so install 1.15.0 here. No manual restart is needed: the next automatic restart starts the new binary on the existing data.'),
+        cmds: ['cd /tmp', 'curl -fsSL -o avalanchego-linux-amd64-v1.15.0.tar.gz https://github.com/ava-labs/avalanchego/releases/download/v1.15.0/avalanchego-linux-amd64-v1.15.0.tar.gz', 'tar xzf avalanchego-linux-amd64-v1.15.0.tar.gz -C /tmp', 'install -m 0755 -o root -g root /tmp/avalanchego-v1.15.0/avalanchego /usr/local/bin/avalanchego', 'avalanchego --version'],
+        wait: 60,
+      },
+      {
+        text: LL('确认 avax-02 已经在运行并开始重放区块。另外两台用 staking 工具从工作电脑升级，各在自己的区域：avax-01 在 us-east-1，avax-03 在 us-west-1。这个工具会等节点重放完成，每台要十几分钟。最后从独立视角确认三台都已 connected。', 'Check that avax-02 is running and replaying blocks. Upgrade the other two from the workstation with the staking tool, each in its own region: avax-01 in us-east-1, avax-03 in us-west-1. The tool waits for each node to finish replaying, which takes about a quarter of an hour. Then confirm from an independent view that all three are connected.'),
+        cmds: ['systemctl status avalanchego', 'journalctl -u avalanchego -n 20 --no-pager', 'exit', 'exit', 'staking --region us-east-1 upgrade avalanche --env prod --moniker avax-01 --version 1.15.0', 'staking --region us-west-1 upgrade avalanche --env prod --moniker avax-03 --version 1.15.0', 'curl -s -X POST --data \'{"jsonrpc":"2.0","id":1,"method":"platform.getCurrentValidators","params":{}}\' https://api.avax.network/ext/bc/P | jq \'.result.validators[] | {nodeID, connected, uptime}\''],
+      },
     ],
     limit: 6 * 3600, holdFor: 60,
     score: avxScore,
@@ -125,10 +156,28 @@
     ],
     forbidden: avxForbidden,
     hints: [
-      LL('<code>ssm avax-02</code>、<code>sudo -i</code>、<code>curl -s localhost:9650/ext/health | jq .checks.network</code>', '<code>ssm avax-02</code>, <code>sudo -i</code>, <code>curl -s localhost:9650/ext/health | jq .checks.network</code>'),
-      LL('"no inbound connections" 说明别人连不上这台节点。比较 <code>curl -s checkip.amazonaws.com</code> 和 <code>jq -r \'."public-ip"\' /etc/avalanche/config.json</code> 的结果。', '"no inbound connections" means peers cannot reach the node. Compare <code>curl -s checkip.amazonaws.com</code> with <code>jq -r \'."public-ip"\' /etc/avalanche/config.json</code>.'),
-      LL('修改配置：<code>sed -i \'s/198.51.100.12/新IP/\' /etc/avalanche/config.json</code>，然后 <code>systemctl restart avalanchego</code>。', 'Fix the config: <code>sed -i \'s/198.51.100.12/NEW_IP/\' /etc/avalanche/config.json</code>, then <code>systemctl restart avalanchego</code>.'),
-      LL('外部探测仍然指向旧 IP。<code>exit</code> 回到工作电脑，修改 <code>~/monitoring/ext-uptime/prometheus/prometheus.yml.tmpl</code>，再运行 <code>~/monitoring/scripts/deploy-ext-uptime.sh</code>。', 'The external probes still target the old IP. <code>exit</code> to the workstation, edit <code>~/monitoring/ext-uptime/prometheus/prometheus.yml.tmpl</code>, then run <code>~/monitoring/scripts/deploy-ext-uptime.sh</code>.'),
+      {
+        text: LL('登录 avax-02，问节点自己哪一项健康检查失败。', 'Log in to avax-02 and ask the node which health check fails.'),
+        cmds: ['ssm avax-02', 'sudo -i', 'systemctl status avalanchego', 'curl -s localhost:9650/ext/health | jq .checks.network'],
+      },
+      {
+        text: LL('"no inbound connections" 说明对等节点连不上它通告的地址。比较实例当前的公网 IP 和配置里的 <code>public-ip</code>。', '"no inbound connections" means peers cannot reach the address the node advertises. Compare the instance\'s current public IP with <code>public-ip</code> in the config.'),
+        cmds: ['curl -s checkip.amazonaws.com', 'jq -r \'."public-ip"\' /etc/avalanche/config.json'],
+      },
+      {
+        text: LL('把当前 IP 写进配置，然后重启节点，让它通告新地址。', 'Write the current IP into the config and restart the node so it advertises the new address.'),
+        cmds: ['NEW=$(curl -s checkip.amazonaws.com)', 'sed -i "s/198.51.100.12/$NEW/" /etc/avalanche/config.json', 'jq -r \'."public-ip"\' /etc/avalanche/config.json', 'systemctl restart avalanchego'],
+        wait: 120,
+      },
+      {
+        text: LL('确认节点恢复健康，再回到工作电脑，从外部测试新地址的 9651 端口。', 'Check that the node is healthy again, then go back to the workstation and test port 9651 on the new address from outside.'),
+        cmds: ['curl -s localhost:9650/ext/health | jq .healthy', 'journalctl -u avalanchego -n 20 --no-pager', 'exit', 'exit', 'nc -zv 198.51.100.47 9651'],
+      },
+      {
+        text: LL('外部探测仍然指向旧 IP。在监控仓库里改好探测目录，再部署到各个探测点。', 'The external probes still target the old IP. Update the probe catalogue in the monitoring repo, then deploy it to the probers.'),
+        cmds: ['cd ~/monitoring', 'grep -n 9651 ext-uptime/prometheus/prometheus.yml.tmpl', 'sed -i "s/198.51.100.12/198.51.100.47/" ext-uptime/prometheus/prometheus.yml.tmpl', 'grep -n 9651 ext-uptime/prometheus/prometheus.yml.tmpl', './scripts/deploy-ext-uptime.sh'],
+        wait: 300,
+      },
     ],
     limit: 4 * 3600, holdFor: 60,
     score: w => [avxScore(w)[0], [LL('avax-02 期末在线率', 'avax-02 end-of-period uptime'), A().projected(w.nodes['avax-02']).toFixed(3) + '%', A().projected(w.nodes['avax-02']) >= 95 ? 'good' : 'mid']],
@@ -163,11 +212,28 @@
       ...avxForbidden.filter(f => f.flag !== 'rollback'),
     ],
     hints: [
-      LL('<code>ssm avax-01</code>、<code>sudo -i</code>、<code>df -h /</code>，再看 <code>journalctl -u avalanchego -n 20 --no-pager</code> 里的 FATAL。', '<code>ssm avax-01</code>, <code>sudo -i</code>, <code>df -h /</code>, then look for FATAL in <code>journalctl -u avalanchego -n 20 --no-pager</code>.'),
-      LL('找出空间去了哪里：<code>du -h --max-depth=1 /home/ubuntu</code>、<code>du -sh /home/ubuntu/.avalanchego/db /var/log/journal</code>。同事做过什么，可以看 <code>cat /root/.bash_history</code>。', 'Find where the space went: <code>du -h --max-depth=1 /home/ubuntu</code>, <code>du -sh /home/ubuntu/.avalanchego/db /var/log/journal</code>. To see what the colleague ran: <code>cat /root/.bash_history</code>.'),
-      LL('可以安全删除的是没拷完的种子包 <code>/home/ubuntu/seed/mainnet-latest.tar.zst</code> 和归档日志（<code>journalctl --vacuum-size=500M</code>）。数据库目录 <code>/home/ubuntu/.avalanchego/db</code> 里的任何文件都不能删。腾出空间后，systemd 的下一次自动重启就会恢复节点。', 'Safe to remove: the half-copied seed archive <code>/home/ubuntu/seed/mainnet-latest.tar.zst</code> and the archived journals (<code>journalctl --vacuum-size=500M</code>). Nothing under <code>/home/ubuntu/.avalanchego/db</code> may be deleted. Once there is space, the next automatic restart brings the node back.'),
-      LL('只清理还不够让 DiskSpaceLow 恢复，需要在线扩容。EBS 操作在工作电脑上做，节点的实例角色没有这个权限：先 <code>exit</code> 退出 root 和会话，再运行 <code>aws ec2 describe-volumes --region us-east-1 --filters Name=attachment.instance-id,Values=i-0a1f3c5e7b9d24681 --output table</code>，再 <code>aws ec2 modify-volume --region us-east-1 --volume-id &lt;卷 ID&gt; --size 2000</code>。', 'Cleaning up alone does not clear DiskSpaceLow; grow the volume online. EBS changes are made from the workstation, because the instance role on the node cannot make them: <code>exit</code> out of root and the session, then run <code>aws ec2 describe-volumes --region us-east-1 --filters Name=attachment.instance-id,Values=i-0a1f3c5e7b9d24681 --output table</code>, then <code>aws ec2 modify-volume --region us-east-1 --volume-id &lt;volume-id&gt; --size 2000</code>.'),
-      LL('约一分钟后卷进入 optimizing 状态，<code>lsblk</code> 能看到新容量。然后在节点上以 root 执行 <code>growpart /dev/nvme0n1 1</code> 和 <code>resize2fs /dev/nvme0n1p1</code>，用 <code>df -h /</code> 确认。', 'After about a minute the volume enters the optimizing state and <code>lsblk</code> shows the new size. Then, as root on the node, run <code>growpart /dev/nvme0n1 1</code> and <code>resize2fs /dev/nvme0n1p1</code>, and confirm with <code>df -h /</code>.'),
+      {
+        text: LL('先确认告警，让电话停下来。然后登录 avax-01，看根盘还剩多少，并在日志里找 FATAL 那一行。', 'Acknowledge the alerts so the paging stops. Then log in to avax-01, see how full the root disk is, and find the FATAL line in the log.'),
+        cmds: ['ack DiskSpaceCritical', 'ack NodeDown', 'ack AvalancheNodeUnhealthy', 'ack AvalancheValidatorNotConnected', 'ack ExternalProbeFailure', 'ssm avax-01', 'sudo -i', 'df -h /', 'journalctl -u avalanchego -n 20 --no-pager'],
+      },
+      {
+        text: LL('找出空间去了哪里，再看同事昨晚执行过什么。', 'Find where the space went, then look at what the colleague ran last night.'),
+        cmds: ['du -h --max-depth=1 /home/ubuntu', 'du -sh /home/ubuntu/.avalanchego/db /var/log/journal', 'cat /root/.bash_history'],
+      },
+      {
+        text: LL('可以安全删除的只有没拷完的种子包和归档日志。数据库目录 <code>/home/ubuntu/.avalanchego/db</code> 里的任何文件都不能删。腾出空间后，systemd 的下一次自动重启就会把节点拉起来。', 'Only the half-copied seed archive and the archived journals are safe to remove. Nothing under <code>/home/ubuntu/.avalanchego/db</code> may be deleted. Once there is space, the next automatic restart brings the node back.'),
+        cmds: ['rm /home/ubuntu/seed/mainnet-latest.tar.zst', 'journalctl --vacuum-size=500M', 'df -h /'],
+        wait: 120,
+      },
+      {
+        text: LL('确认节点已恢复。只清理还不够让 DiskSpaceLow 恢复，需要在线扩容根卷。EBS 操作在工作电脑上做，节点的实例角色没有这个权限。', 'Confirm the node is back. Cleaning up alone does not clear DiskSpaceLow, so grow the root volume online. EBS changes are made from the workstation, because the instance role on the node cannot make them.'),
+        cmds: ['systemctl status avalanchego', 'curl -s localhost:9650/ext/health | jq .healthy', 'exit', 'exit', 'aws ec2 describe-volumes --region us-east-1 --filters Name=attachment.instance-id,Values=i-0a1f3c5e7b9d24681 --output table', 'aws ec2 modify-volume --region us-east-1 --volume-id vol-018642d9b7e5c3f1a --size 2000'],
+        wait: 120,
+      },
+      {
+        text: LL('卷进入 optimizing 状态后，节点上就能看到新容量。在节点上扩展分区和文件系统，再确认可用空间。', 'Once the volume is optimizing, the node sees the new size. Grow the partition and the filesystem on the node, then check the free space.'),
+        cmds: ['aws ec2 describe-volumes-modifications --region us-east-1 --volume-ids vol-018642d9b7e5c3f1a', 'ssm avax-01', 'sudo -i', 'lsblk', 'growpart /dev/nvme0n1 1', 'resize2fs /dev/nvme0n1p1', 'df -h /'],
+      },
     ],
     limit: 4 * 3600, holdFor: 60,
     score: w => {
@@ -219,10 +285,30 @@
       ...avxForbidden,
     ],
     hints: [
-      LL('先看奖励实际依据的记录：<code>curl -s -X POST --data \'{"jsonrpc":"2.0","id":1,"method":"platform.getCurrentValidators","params":{}}\' https://api.avax.network/ext/bc/P | jq \'.result.validators[] | {nodeID, uptime, endTime}\'</code>。每个 PR 里写了对应节点的 NodeID（<code>gh pr view 522</code>）。', 'Start with the record the reward is paid on: <code>curl -s -X POST --data \'{"jsonrpc":"2.0","id":1,"method":"platform.getCurrentValidators","params":{}}\' https://api.avax.network/ext/bc/P | jq \'.result.validators[] | {nodeID, uptime, endTime}\'</code>. Each PR names its node\'s NodeID (<code>gh pr view 522</code>).'),
-      LL('<code>date -u -d @&lt;endTime&gt;</code> 换算结束时间。期末在线率 = (当前在线率 × 已过天数 + 100 × 剩余天数) ÷ 整期天数，例如 <code>echo "scale=4; (89.2508*52 + 100*4)/56" | bc</code>。avax-02 的整期是 56 天，每离线一小时约损失 0.074 个百分点。', 'Convert the end time with <code>date -u -d @&lt;endTime&gt;</code>. End-of-period uptime = (current uptime × days elapsed + 100 × days left) ÷ period length, for example <code>echo "scale=4; (89.2508*52 + 100*4)/56" | bc</code>. avax-02\'s period is 56 days, so each hour offline costs about 0.074 percentage points.'),
-      LL('avax-02 如果一直在线，期末约 90.02%，余量只有约 15 分钟。25 分钟的变更会让整期奖励作废，所以 #522 要等期末之后再做：<code>gh pr edit 522 --add-label do-not-merge</code>，或者 <code>gh pr close 522 --comment "等 avax-02 质押期结束后再做"</code>。', 'If avax-02 stays online it ends the period at about 90.02%, a margin of about 15 minutes. A 25-minute change would forfeit the whole reward, so #522 waits until after the period ends: <code>gh pr edit 522 --add-label do-not-merge</code>, or <code>gh pr close 522 --comment "after avax-02\'s period ends"</code>.'),
-      LL('avax-01 在线率约 99.3%，质押期还有几个月，25 分钟的停机影响很小：<code>gh pr merge 521</code>，然后在事件记录里等它恢复健康。', 'avax-01 is at about 99.3% with months left in its period, so 25 minutes offline barely moves it: <code>gh pr merge 521</code>, then watch the event log until it is healthy.'),
+      {
+        text: LL('先确认两条 critical 告警，让电话停下来。然后读两个 PR：它们都要停实例约 25 分钟，PR 里写了对应节点的 NodeID。', 'Acknowledge the two critical alerts so the paging stops. Then read both pull requests: each stops an instance for about 25 minutes and names its node\'s NodeID.'),
+        cmds: ['ack AvalancheRewardingStakeCritical', 'ack AvalancheRewardAtRiskAtPeriodEnd', 'gh pr list', 'gh pr view 521', 'gh pr view 522'],
+      },
+      {
+        text: LL('奖励依据的是 P-Chain 上的记录。向独立节点 api.avax.network 读取每台验证者的在线率和结束时间，再把 avax-02 的 endTime 换算成日期。', 'The reward is paid on the P-Chain record. Read each validator\'s uptime and end time from the independent node api.avax.network, then convert avax-02\'s endTime to a date.'),
+        cmds: [
+          'curl -s -X POST --data \'{"jsonrpc":"2.0","id":1,"method":"platform.getCurrentValidators","params":{}}\' https://api.avax.network/ext/bc/P | jq \'.result.validators[] | {nodeID, uptime, endTime}\'',
+          'END=$(curl -s -X POST --data \'{"jsonrpc":"2.0","id":1,"method":"platform.getCurrentValidators","params":{"nodeIDs":["NodeID-MFrZFVCXPv5iCn6M9K6XduxGTYp891xXZ"]}}\' https://api.avax.network/ext/bc/P | jq -r \'.result.validators[0].endTime\'); date -u -d @$END',
+        ],
+      },
+      {
+        text: LL('算一算。期末在线率 = (当前在线率 × 已过天数 + 100 × 剩余天数) ÷ 整期天数。avax-02 已过 52 天、还剩 4 天：一直在线时期末约 90.02%；每离线一小时损失约 0.074 个百分点；再停 25 分钟就会跌破 90%。', 'Do the arithmetic. End-of-period uptime = (current uptime × days elapsed + 100 × days left) ÷ period length. avax-02 is 52 days in with 4 left: online throughout it ends at about 90.02%, each hour offline costs about 0.074 points, and a 25-minute outage takes it below 90%.'),
+        cmds: ['echo "scale=4; (89.2508*52 + 100*4)/56" | bc', 'echo "scale=4; 100/56/24" | bc', 'echo "scale=4; (89.2508*52 + 100*4 - 100*25/60/24)/56" | bc'],
+      },
+      {
+        text: LL('#522 要等 avax-02 的质押期结束之后再做。给它加上 do-not-merge 标签，并留言说明原因。', '#522 waits until avax-02\'s period has ended. Label it do-not-merge and leave a comment with the reason.'),
+        cmds: ['gh pr edit 522 --add-label do-not-merge', 'gh pr comment 522 --body "Hold until avax-02\'s staking period ends on 20 October: 25 minutes offline now would take it below 90% and forfeit the reward."', 'gh pr view 522'],
+      },
+      {
+        text: LL('avax-01 在线率约 99.3%，质押期还有几个月，25 分钟的停机影响很小。合并 #521，然后在事件记录里等 avax-01 在新机型上恢复健康。', 'avax-01 is at about 99.3% with months left in its period, so 25 minutes offline barely moves it. Merge #521, then watch the event log until avax-01 is healthy on its new instance type.'),
+        cmds: ['gh pr merge 521', 'gh pr list'],
+        wait: 1800,
+      },
     ],
     limit: 4 * 3600, holdFor: 60,
     score: w => {

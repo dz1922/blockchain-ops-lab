@@ -1112,7 +1112,7 @@
     id: 'avalanche', name: 'Avalanche', color: '#f5a623', logo: LOGO,
     desc: S.LL('Primary Network 验证者：avalanchego 的进程与配置、数据库版本、网络升级、P-Chain 在线率与奖励门槛。', 'Primary Network validators: the avalanchego process and its config, database versions, network upgrades, P-Chain uptime and the reward threshold.'),
     init(w, cfg) {
-      w.chain = { activation: cfg.activation ?? null, upgrade: cfg.upgrade || 'Helicon', cHeight0: 87015424, pr: cfg.pr || null, primitive: cfg.primitive || 'v2', showUpgradeAlert: !!cfg.showUpgradeAlert, fresh: !!cfg.freshNodes, s3: {} };
+      w.chain = { activation: cfg.activation ?? null, upgrade: cfg.upgrade || 'Helicon', cHeight0: 87015424, pr: cfg.pr ? Object.assign({}, cfg.pr) : null, primitive: cfg.primitive || 'v2', showUpgradeAlert: !!cfg.showUpgradeAlert, fresh: !!cfg.freshNodes, s3: {} };
       (cfg.nodes || []).forEach(sp => { w.nodes[sp.moniker] = makeNode(w, sp); });
       (cfg.freshNodes || []).forEach(sp => { w.nodes[sp.moniker] = makeFreshNode(w, sp); });
     },

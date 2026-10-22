@@ -161,27 +161,17 @@ module.exports = [
     expect: r => r.viol && r.viol.double_sign !== undefined ? [] : ['double_sign not flagged'],
   },
   {
-    name: 'run', // R1: follow every step of the guided build by running the commands its instructions give
+    name: 'run', // R1: run every step's cmds in order, let the clock run for its wait; admission must land at the first possible epoch
     scenario: 'sol-run',
     steps: `(async () => {
     const sc = VSIM.S.scenarios.find(s => s.id === 'sol-run');
-    const codes = st => { const d = document.createElement('div'); d.innerHTML = VSIM.S.tr(st.how); return [...d.querySelectorAll('code')].map(c => c.textContent); };
     const o = [], stuck = [];
-    for (let i = 0; i < sc.steps.length; i++) {
-      for (const c of codes(sc.steps[i])) {
-        if (/ monitor$|^journalctl|^has caught up$/.test(c)) continue; // interactive or not a command
-        o.push('$ ' + c.slice(0, 100)); o.push(await T.cmd(c));
-      }
-      for (let k = 0; k < 40 && (VSIM.w.stepIdx || 0) <= i && !VSIM.w.done; k++) {
-        await T.adv(30);
-        if (/catchup/.test(codes(sc.steps[i]).join(' '))) o.push(await T.cmd('solana catchup --our-localhost'));
-      }
-      // admission waits for epoch boundaries, which are a day apart
-      for (let k = 0; k < 60 && (VSIM.w.stepIdx || 0) <= i && !VSIM.w.done; k++) {
-        await T.adv(1800, 300);
-        for (const c of codes(sc.steps[i]).filter(x => /^solana (validators|vote-account|epoch-info)/.test(x))) await T.cmd(c);
-      }
-      if ((VSIM.w.stepIdx || 0) <= i) { stuck.push(i + 1); break; }
+    for (let i = 0; i < sc.steps.length && !VSIM.w.done; i++) {
+      if ((VSIM.w.stepIdx || 0) > i) continue;
+      for (const c of sc.steps[i].cmds) { o.push('$ ' + c.slice(0, 100)); o.push(await T.cmd(c)); }
+      await T.adv(sc.steps[i].wait || 30, 10);
+      for (let k = 0; k < 120 && (VSIM.w.stepIdx || 0) <= i && !VSIM.w.done; k++) await T.adv(300, 30);
+      if ((VSIM.w.stepIdx || 0) <= i && !VSIM.w.done) { stuck.push(i + 1); break; }
     }
     return { out: o.join('\\n').slice(-6000), stuck, step: VSIM.w.stepIdx, done: VSIM.w.done, result: VSIM.w.result, viol: VSIM.w.violations, journal: (VSIM.w.nodes['sol-new'].journal['agave-validator'] || []).slice(-6).map(e => e.msg), ${tail} };
   })()`,

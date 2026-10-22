@@ -122,4 +122,54 @@ module.exports = [
   })()`,
     expect: r => r.viol && r.viol.wipe_ledger !== undefined ? [] : ['wipe_ledger not flagged'],
   },
+  {
+    name: 'run', // R1: follow every step of the guided build by running the commands its instructions give
+    scenario: 'sol-run',
+    steps: `(async () => {
+    const sc = VSIM.S.scenarios.find(s => s.id === 'sol-run');
+    const codes = st => { const d = document.createElement('div'); d.innerHTML = VSIM.S.tr(st.how); return [...d.querySelectorAll('code')].map(c => c.textContent); };
+    const o = [], stuck = [];
+    for (let i = 0; i < sc.steps.length; i++) {
+      for (const c of codes(sc.steps[i])) {
+        if (/ monitor$|^journalctl|^has caught up$/.test(c)) continue; // interactive or not a command
+        o.push('$ ' + c.slice(0, 100)); o.push(await T.cmd(c));
+      }
+      for (let k = 0; k < 40 && (VSIM.w.stepIdx || 0) <= i && !VSIM.w.done; k++) {
+        await T.adv(30);
+        if (/catchup/.test(codes(sc.steps[i]).join(' '))) o.push(await T.cmd('solana catchup --our-localhost'));
+      }
+      if ((VSIM.w.stepIdx || 0) <= i) { stuck.push(i + 1); break; }
+    }
+    return { out: o.join('\\n'), stuck, step: VSIM.w.stepIdx, done: VSIM.w.done, result: VSIM.w.result, viol: VSIM.w.violations, journal: (VSIM.w.nodes['sol-new'].journal['agave-validator'] || []).slice(-6).map(e => e.msg) };
+  })()`,
+    expect: r => r.result && r.result.success ? [] : [`lab not completed (stuck at step ${(r.stuck || [])[0]})`],
+  },
+  {
+    name: 'runWithdrawer', // R1 trap: the authorized withdrawer is generated on the validator host
+    scenario: 'sol-run',
+    steps: `(async () => {
+    const o = [];
+    o.push(await T.cmd('ssm sol-new')); o.push(await T.cmd('sudo -i'));
+    o.push(await T.cmd('solana-keygen new -o /home/sol/authorized-withdrawer-keypair.json'));
+    o.push(await T.cmd('git clone --branch v4.3.0 --depth 1 https://github.com/anza-xyz/agave.git /opt/agave'));
+    o.push(await T.cmd('/opt/agave/scripts/cargo-install-all.sh /usr/local'));
+    o.push(await T.cmd('solana-keygen new --no-bip39-passphrase -o /home/sol/authorized-withdrawer-keypair.json'));
+    await T.adv(30);
+    return { out: o.join('\\n----\\n'), viol: VSIM.w.violations };
+  })()`,
+    expect: r => r.viol && r.viol.withdrawer_hot !== undefined ? [] : ['withdrawer_hot not flagged'],
+  },
+  {
+    name: 'runMainnet', // R1 trap: funding without -ut and --from spends mainnet SOL from the default keypair
+    scenario: 'sol-run',
+    steps: `(async () => {
+    const o = [];
+    o.push(await T.cmd('cat ~/NOTES.md'));
+    o.push(await T.cmd('solana transfer 8vRtQm4KcZ7wLx2NbYp9HsJd3Fa6Ue5GkT1nWq7XzMpA 20'));
+    o.push(await T.cmd('solana transfer 8vRtQm4KcZ7wLx2NbYp9HsJd3Fa6Ue5GkT1nWq7XzMpA 20 --allow-unfunded-recipient'));
+    await T.adv(30);
+    return { out: o.join('\\n----\\n'), viol: VSIM.w.violations };
+  })()`,
+    expect: r => r.viol && r.viol.mainnet_spend !== undefined ? [] : ['mainnet_spend not flagged'],
+  },
 ];

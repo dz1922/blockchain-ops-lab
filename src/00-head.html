@@ -178,7 +178,13 @@ button{font:inherit;cursor:pointer}
 .lv-pn{display:flex;justify-content:space-between;gap:1rem;margin-top:2.4rem;flex-wrap:wrap}
 @media(max-width:860px){.lv{grid-template-columns:minmax(0,1fr)}.lv-nav{position:static;max-height:none;border-right:0;border-bottom:1px solid var(--line);grid-auto-flow:column;grid-auto-columns:max-content;overflow-x:auto}.lv-nav .next{display:none}.wg-ctl{grid-template-columns:minmax(0,1fr) 7ch}.wg-ctl input{grid-column:1/-1;grid-row:2}}
 /* guided steps in the goals box */
-#obj .how{display:block;grid-column:2;font-size:.8rem;color:var(--ink-2);margin-top:.3rem;line-height:1.55}
+#obj .how{display:block;grid-column:2;font-size:.8rem;color:var(--ink-2);margin-top:.3rem;line-height:1.55;min-width:0;overflow-wrap:anywhere}
+#obj .how code{white-space:pre-wrap;word-break:break-all}
+#obj .how .after{margin-top:.5rem;padding-top:.45rem;border-top:1px dashed var(--line-2);color:var(--ink-3)}
+#obj .st-t{all:unset;cursor:pointer;display:flex;justify-content:space-between;gap:.6rem;min-width:0;overflow-wrap:anywhere}
+#obj .st-t i{font-style:normal;font-family:var(--f-mono);color:var(--ink-3);flex:none}
+#obj .st-t:hover,#obj .st-t:hover i{color:var(--lime)}
+#obj .st-t:focus-visible{outline:1px solid var(--lime);outline-offset:2px}
 #obj .how p+p,#obj .how pre{margin-top:.4rem}
 #obj .how code{cursor:pointer}
 #obj .how code:hover{border-color:var(--lime)}

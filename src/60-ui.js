@@ -404,9 +404,14 @@
     $('obj-count').textContent = `${st.filter(Boolean).length}/${os.length}`;
     const hold = w.scn.holdFor ?? 60, steps = w.scn.steps, cur = w.stepIdx || 0;
     const objHtml = steps
-      ? `<ul>${steps.map((x, i) => `<li class="${st[i] ? 'ok' : ''} ${!w.done && i === cur ? 'cur' : ''}"><span class="m">${st[i] ? '✔' : i === cur ? '▸' : '○'}</span><span>${i + 1}. ${tr(x.text)}</span>${!w.done && i === cur && x.how ? `<div class="how">${tr(x.how)}</div>` : ''}</li>`).join('')}</ul><div class="sub" style="text-transform:none;letter-spacing:0">${t('clickToPaste')}</div>`
+      ? `<ul>${steps.map((x, i) => {
+          // the current step is open by default; any step can be opened or closed by clicking its title
+          const open = w.stepOpen && w.stepOpen[i] !== undefined ? w.stepOpen[i] : (!w.done && i === cur);
+          const body = open ? `<div class="how">${tr(x.how || '')}${st[i] && x.after ? `<div class="after">${tr(x.after)}</div>` : ''}</div>` : '';
+          return `<li class="${st[i] ? 'ok' : ''} ${!w.done && i === cur ? 'cur' : ''} ${open ? 'open' : ''}"><span class="m">${st[i] ? '✔' : i === cur ? '▸' : '○'}</span><button class="st-t" data-step="${i}" aria-expanded="${open}">${i + 1}. ${tr(x.text)}<i>${open ? '−' : '+'}</i></button>${body}</li>`;
+        }).join('')}</ul><div class="sub" style="text-transform:none;letter-spacing:0">${t('clickToPaste')}</div>`
       : `<ul>${os.map((o, i) => `<li class="${st[i] ? 'ok' : ''}"><span class="m">${st[i] ? '✔' : '○'}</span><span>${tr(o.text)}</span></li>`).join('')}</ul>`;
-    const objKey = steps ? `${S.lang}|${cur}|${w.done}|${Object.keys(w.violations).length}` : null;
+    const objKey = steps ? `${S.lang}|${cur}|${w.done}|${Object.keys(w.violations).length}|${JSON.stringify(w.stepOpen || {})}` : null;
     const objFull = `${objHtml}
       ${(w.scn.forbidden || []).length ? `<div class="sub">${t('doNot')}</div><ul>${w.scn.forbidden.map(f => `<li class="${w.violations[f.flag] !== undefined ? 'no' : ''}"><span class="m">${w.violations[f.flag] !== undefined ? '✕' : '·'}</span><span>${tr(f.text)}</span></li>`).join('')}</ul>` : ''}
       ${!steps && st.length && st.every(Boolean) && !w.done ? `<div class="sub">${t('hold', { n: hold })}</div><div class="hold"><i style="width:${Math.min(100, w.okFor / hold * 100)}%"></i></div>` : ''}`;
@@ -517,7 +522,11 @@
     bindTerminal();
     $('back').addEventListener('click', () => { location.hash = homeNet ? 'n=' + homeNet : ''; });
     $('l-back').addEventListener('click', () => { location.hash = homeNet ? 'n=' + homeNet : ''; });
-    $('obj').addEventListener('click', e => { const c = e.target.closest('.how code'); if (c && !busy) { $('cmd').value = c.textContent; $('cmd').focus(); } });
+    $('obj').addEventListener('click', e => {
+      const c = e.target.closest('.how code'); if (c && !busy) { $('cmd').value = c.textContent; $('cmd').focus(); return; }
+      const b = e.target.closest('[data-step]');
+      if (b && w) { w.stepOpen = w.stepOpen || {}; w.stepOpen[+b.dataset.step] = b.getAttribute('aria-expanded') !== 'true'; renderSide(true); }
+    });
     $('btn-hint').addEventListener('click', () => { if (!busy) { echo('hint'); term.write('\n'); runLine('hint'); } });
     $('btn-brief').addEventListener('click', () => showBrief(false));
     window.addEventListener('hashchange', route);
